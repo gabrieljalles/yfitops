@@ -22,6 +22,9 @@ bucket_name = "yfitops-music"
 # APP_URL: opcional. Sem ele, o link de recuperação usa o endereço do próprio Worker.
 # Remetente do e-mail de recuperação (domínio verificado no Resend).
 MAIL_FROM = "Yfitops <onboarding@resend.dev>"
+# Quem vê o painel administrativo (aprova pedidos de acesso, apaga músicas do
+# sistema). Para os outros, o painel não existe.
+ADMIN_EMAILS = "gabriel.jalleswork@hotmail.com"
 # Limite TOTAL da nuvem, somando todas as contas, em GB (o R2 é grátis até 10 GB).
 QUOTA_GB = "9.5"
 
@@ -32,6 +35,6 @@ crons = ["0 6 * * *"]
 
 # Segredos (wrangler secret put …  /  .dev.vars em desenvolvimento):
 # ESCROW_PRIVATE_KEY, ESCROW_PUBLIC_KEY  → npm run gen-escrow -w server
-# ALLOWED_EMAILS                         → e-mails convidados (vírgula); "@dominio.com" libera o domínio
+# ALLOWED_EMAILS                         → (opcional) e-mails já aprovados, sem esperar o administrador
 # RESEND_API_KEY                         → envio de e-mails (código de cadastro e recuperação);
 #                                          sem ele, os e-mails aparecem só no log

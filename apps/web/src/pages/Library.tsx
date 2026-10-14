@@ -67,10 +67,15 @@ export function LibraryPage() {
   async function removeSelected() {
     if (!selected?.size) return;
     const n = selected.size;
+    // Músicas do catálogo são de todos: saem só da sua biblioteca. As antigas
+    // (criptografadas, só suas) são apagadas da nuvem de verdade.
+    const onlyCatalog = [...selected].every((id) => lib.tracks[id]?.song);
     const ok = await confirmDialog({
-      title: n === 1 ? "Excluir música?" : `Excluir ${n} músicas?`,
-      message: `${n === 1 ? "Ela será apagada" : "Elas serão apagadas"} da nuvem e de todos os aparelhos. Isso não pode ser desfeito.`,
-      confirm: "excluir",
+      title: n === 1 ? "Tirar da biblioteca?" : `Tirar ${n} músicas da biblioteca?`,
+      message: onlyCatalog
+        ? `${n === 1 ? "Ela sai" : "Elas saem"} da sua biblioteca, das suas playlists e dos downloads deste aparelho. Continuam no yfitops: dá para achar na busca e adicionar de novo.`
+        : `Saem da sua biblioteca e de todos os seus aparelhos. As que só você tinha são apagadas da nuvem; isso não pode ser desfeito.`,
+      confirm: "tirar",
       danger: true,
     });
     if (!ok) return;

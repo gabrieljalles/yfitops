@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Vinyl } from "./components/Cover";
 import { Dialog } from "./components/Dialog";
 import { Icon, type IconName } from "./components/Icon";
@@ -12,9 +12,9 @@ import { jobsStore } from "./lib/importer";
 import { loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
 import { playerStore } from "./lib/player";
-import { sessionStore } from "./lib/session";
+import { pendingRequestsStore, refreshAccount, sessionStore } from "./lib/session";
 import { uiStore } from "./lib/ui";
-import { AuthPage, ResetPage } from "./pages/Auth";
+import { AuthPage, PendingPage, ResetPage } from "./pages/Auth";
 import { FavoritesPage, GroupPage, SharedGroupPage } from "./pages/Group";
 import { HomePage } from "./pages/Home";
 import { LibraryPage } from "./pages/Library";
@@ -23,6 +23,9 @@ import { SettingsPage } from "./pages/Settings";
 import { UploadPage } from "./pages/Upload";
 import { navigate, useRoute } from "./router";
 import { linkImportStore } from "./lib/linkImport";
+
+// Painel administrativo: só é baixado por quem é administrador.
+const AdminPage = lazy(() => import("./pages/Admin"));
 
 const NAV: [string, string, IconName][] = [
   ["", "Início", "home"],
@@ -36,18 +39,21 @@ export function App() {
   const session = useStore(sessionStore);
   const { parts, query } = useRoute();
 
+  const pending = session?.status === "pending";
+
   useEffect(() => {
-    if (!session) {
+    if (!session || pending) {
       resetLibrary();
       return;
     }
+    void refreshAccount();
     // Depois do sync: músicas que a faxina do servidor juntou viram uma só aqui também (no máximo a cada 6 h).
     const syncAll = () => sync().then(() => reconcileMerges().catch(() => {}));
     void loadLocal().then(syncAll);
     void loadOfflineIndex();
     const onFocus = () => document.visibilityState === "visible" && void syncAll();
     const onOnline = () => void syncAll();
-    const interval = setInterval(() => void syncAll(), 60_000);
+    const interval = setInterval(() => (void syncAll(), void refreshAccount()), 60_000);
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("online", onOnline);
     return () => {
@@ -55,7 +61,7 @@ export function App() {
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("online", onOnline);
     };
-  }, [session?.userId]);
+  }, [session?.userId, pending]);
 
   // Avisa antes de fechar com envios em andamento.
   useEffect(() => {
@@ -69,6 +75,7 @@ export function App() {
   if (parts[0] === "redefinir" && query.get("token")) return <ResetPage token={query.get("token")!} />;
   if (session === undefined) return null;
   if (!session) return <AuthPage />;
+  if (pending) return <PendingPage />;
 
   return (
     <Shell section={parts[0] ?? ""}>
@@ -89,6 +96,15 @@ export function App() {
             return <SharedGroupPage shareId={parts[1]} />;
           case "favoritas":
             return <FavoritesPage />;
+          case "admin":
+            // Para quem não é administrador, o endereço só abre o início.
+            if (session.admin)
+              return (
+                <Suspense fallback={<div className="page muted">Carregando…</div>}>
+                  <AdminPage />
+                </Suspense>
+              );
+            return <HomePage />;
           default:
             return <HomePage />;
         }
@@ -102,12 +118,15 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
   const jobs = useStore(jobsStore);
   const uploading = jobs.filter((j) => !["pronto", "já existe", "erro"].includes(j.status)).length;
   const linkImport = useStore(linkImportStore);
+  const session = useStore(sessionStore);
+  const requests = useStore(pendingRequestsStore);
+  const nav: [string, string, IconName][] = session?.admin ? [...NAV, ["admin", "Painel", "shield"]] : NAV;
 
   return (
     <div className={`app${player.index >= 0 ? " has-player" : ""}`}>
       <nav className="nav">
         <Brand playing={player.playing} />
-        {NAV.map(([path, label, icon]) => (
+        {nav.map(([path, label, icon]) => (
           <button key={path} className={section === path ? "on" : ""} onClick={() => navigate(`/${path}`)}>
             <Icon name={icon} />
             <span>{label}</span>
@@ -115,6 +134,11 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
               // Importando por link: o ponto aparece mesmo antes de a 1ª música entrar na fila.
               <span className="dot" title={linkImport.note || undefined}>
                 {uploading || "…"}
+              </span>
+            )}
+            {path === "admin" && requests > 0 && (
+              <span className="dot">
+                {requests}
               </span>
             )}
           </button>

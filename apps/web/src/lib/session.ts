@@ -8,6 +8,8 @@ import {
   open,
   seal,
   toB64,
+  type AccountInfo,
+  type AccountStatus,
   type SessionResponse,
   type UserKeys,
 } from "@yfitops/core";
@@ -21,7 +23,13 @@ export interface Session {
   userId: string;
   email: string;
   publicKey: string;
+  /** Ausente nas sessões salvas antes da aprovação existir: conta como liberada. */
+  status?: AccountStatus;
+  admin?: true;
 }
+
+/** Pedidos de acesso esperando (só o administrador recebe). */
+export const pendingRequestsStore = createStore(0);
 
 export interface Keys extends UserKeys {
   /** Chave privada de compartilhamento (não-extraível). */
@@ -62,7 +70,14 @@ async function finishLogin(res: SessionResponse, masterKey: Uint8Array) {
   const user = await deriveUserKeys(masterKey);
   const pkcs8 = await open(user.enc, fromB64(res.wrappedPrivateKey));
   const k: Keys = { ...user, privateKey: await importPrivateKey(pkcs8) };
-  const s: Session = { token: res.token, userId: res.userId, email: res.email, publicKey: res.publicKey };
+  const s: Session = {
+    token: res.token,
+    userId: res.userId,
+    email: res.email,
+    publicKey: res.publicKey,
+    status: res.status,
+    ...(res.admin && { admin: true as const }),
+  };
   const previous = await kvGet<Session>("session");
   if (previous && previous.userId !== s.userId) await wipe();
   await kvSet("keys", k);
@@ -70,6 +85,28 @@ async function finishLogin(res: SessionResponse, masterKey: Uint8Array) {
   keys = k;
   setToken(s.token);
   sessionStore.set(s);
+}
+
+/**
+ * Pergunta ao servidor a situação da conta: se foi aprovada (quem espera fica
+ * perguntando) e, para o administrador, quantos pedidos de acesso esperam.
+ */
+export async function refreshAccount() {
+  const s = sessionStore.get();
+  if (!s) return;
+  let info: AccountInfo;
+  try {
+    info = await api.json<AccountInfo>("/auth/me");
+  } catch {
+    return; // offline: fica como estava
+  }
+  pendingRequestsStore.set(info.pendingRequests ?? 0);
+  const { admin: _old, ...rest } = s;
+  const next: Session = { ...rest, status: info.status, ...(info.admin && { admin: true as const }) };
+  if (next.status !== s.status || next.admin !== s.admin) {
+    await kvSet("session", next);
+    sessionStore.set(next);
+  }
 }
 
 /**

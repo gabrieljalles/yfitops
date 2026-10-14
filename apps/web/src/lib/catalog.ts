@@ -3,6 +3,7 @@ import { api } from "./api";
 import { removeOffline } from "./blobs";
 import { deleteItem, libraryStore, saveItem } from "./library";
 import { mergeTags } from "./search";
+import { deleteTracks } from "./tracks";
 
 // ---------------------------------------------------------------------------
 // Catálogo compartilhado: cada música existe uma vez só na nuvem (MP3, sem
@@ -122,13 +123,14 @@ export async function addSong(song: SongInfo, extras: SongExtras = {}): Promise<
 
 // ---------------- Duplicadas juntadas pela faxina do servidor ----------------
 
-const RECONCILE_EVERY = 6 * 60 * 60 * 1000;
+const RECONCILE_EVERY = 60 * 60 * 1000;
 let lastReconcile = 0;
 
 /**
  * A faxina diária do servidor junta músicas duplicadas do catálogo. Aqui a
  * biblioteca acompanha: a faixa passa a apontar para a música que ficou, e se a
  * pessoa tinha as duas, vira uma só (favorita, tags e playlists preservadas).
+ * Músicas que o administrador apagou do sistema saem da biblioteca.
  */
 export async function reconcileMerges(force = false) {
   if (!force && Date.now() - lastReconcile < RECONCILE_EVERY) return;
@@ -136,7 +138,15 @@ export async function reconcileMerges(force = false) {
   const tracks = libraryStore.get().tracks;
   const ids = [...new Set(Object.values(tracks).flatMap((t) => (t.song ? [t.song] : [])))];
   if (!ids.length) return;
-  const { merged } = await api.json<{ merged: Record<string, SongInfo> }>("/songs/resolve", { method: "POST", json: { ids } });
+  const { merged, removed } = await api.json<{ merged: Record<string, SongInfo>; removed: string[] }>("/songs/resolve", {
+    method: "POST",
+    json: { ids },
+  });
+  const gone = Object.entries(tracks).filter(([, t]) => t.song && removed.includes(t.song));
+  if (gone.length) {
+    await deleteTracks(gone.map(([id]) => id));
+    for (const [, t] of gone) for (const r of [t.variants.mp3, t.cover]) if (r?.shared) await removeOffline(r).catch(() => {});
+  }
   for (const [oldId, t] of Object.entries(tracks)) {
     const song = t.song ? merged[t.song] : undefined;
     if (!song) continue;

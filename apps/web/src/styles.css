@@ -1043,6 +1043,56 @@ select {
 .catalog-results > p {
   margin: 0 0 8px;
 }
+
+/* ---------- Painel administrativo ---------- */
+
+.admin-list {
+  width: 100%;
+  gap: 0;
+}
+.admin-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.admin-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.admin-filters {
+  width: 100%;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.admin-filters .search-input {
+  flex: 1 1 240px;
+  font-size: 1rem;
+  padding: 10px 14px;
+}
+.admin .tracks {
+  width: 100%;
+}
+.icon-btn.danger {
+  color: var(--danger);
+}
+.auth-form.pending {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.auth-form.pending p {
+  margin: 0;
+}
 .range-value {
   font-variant-numeric: tabular-nums;
   color: var(--accent);

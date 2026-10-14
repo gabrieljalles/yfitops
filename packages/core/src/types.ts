@@ -124,6 +124,20 @@ export interface SessionResponse {
   wrappedMasterKey: string;
   wrappedPrivateKey: string;
   publicKey: string;
+  /** "pending" = pediu para entrar e espera o administrador aceitar. */
+  status: AccountStatus;
+  /** Só existe para administradores. */
+  admin?: true;
+}
+
+export type AccountStatus = "approved" | "pending";
+
+/** GET /auth/me */
+export interface AccountInfo {
+  status: AccountStatus;
+  admin?: true;
+  /** Pedidos de acesso esperando (só para administradores). */
+  pendingRequests?: number;
 }
 
 /** Conteúdo de um compartilhamento (cifrado para a chave pública do destinatário). */

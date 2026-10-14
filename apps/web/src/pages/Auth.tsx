@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Vinyl } from "../components/Cover";
 import { Notice, type Tone } from "../components/Notice";
 import { ApiError } from "../lib/api";
-import { forgotPassword, login, resetPassword, signup, startSignup } from "../lib/session";
+import { forgotPassword, login, logout, refreshAccount, resetPassword, sessionStore, signup, startSignup } from "../lib/session";
+import { useStore } from "../lib/observable";
 import { navigate } from "../router";
 
 type Mode = "entrar" | "criar" | "esqueci";
@@ -91,6 +92,46 @@ function Field({
         </Notice>
       )}
     </label>
+  );
+}
+
+/** Conta criada, esperando o administrador aceitar. */
+export function PendingPage() {
+  const session = useStore(sessionStore);
+  useEffect(() => {
+    // Pergunta de tempos em tempos: quando for aceita, o app abre sozinho.
+    const timer = setInterval(() => void refreshAccount(), 15_000);
+    const onFocus = () => document.visibilityState === "visible" && void refreshAccount();
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, []);
+  return (
+    <Shell>
+      <div className="auth-form pending">
+        <p>
+          Pedido enviado. Assim que for aceito, o app abre sozinho
+          {session?.email && (
+            <>
+              {" "}
+              para <strong>{session.email}</strong>
+            </>
+          )}
+          .
+        </p>
+        <p className="muted small">Pode fechar e voltar depois: você continua conectado.</p>
+        <div className="auth-links">
+          <button className="link" onClick={() => void refreshAccount()}>
+            já fui aceito
+          </button>
+          <button className="link" onClick={() => void logout()}>
+            sair
+          </button>
+        </div>
+      </div>
+    </Shell>
   );
 }
 

@@ -160,15 +160,25 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
             <button
               className="link danger"
               onClick={async () => {
-                const ok = await confirmDialog({
-                  title: "Excluir música?",
-                  message: `"${track.title}" será apagada da nuvem e de todos os aparelhos. Isso não pode ser desfeito.`,
-                  confirm: "excluir",
-                  danger: true,
-                });
+                // Música do catálogo é de todos: sai só da sua biblioteca (e dos seus downloads).
+                const ok = await confirmDialog(
+                  track.song
+                    ? {
+                        title: "Tirar da biblioteca?",
+                        message: `"${track.title}" sai da sua biblioteca, das suas playlists e dos downloads deste aparelho. Ela continua no yfitops: dá para achar na busca e adicionar de novo.`,
+                        confirm: "tirar",
+                        danger: true,
+                      }
+                    : {
+                        title: "Excluir música?",
+                        message: `"${track.title}" será apagada da nuvem e de todos os aparelhos. Isso não pode ser desfeito.`,
+                        confirm: "excluir",
+                        danger: true,
+                      },
+                );
                 if (ok) {
                   closeTrack();
-                  void attempt(() => deleteTrack(id), "Música excluída");
+                  void attempt(() => deleteTrack(id), track.song ? "Tirada da biblioteca" : "Música excluída");
                 }
               }}
             >

@@ -30,14 +30,16 @@ interface Env {
   QUOTA_GB: string;
   ESCROW_PRIVATE_KEY: string;
   ESCROW_PUBLIC_KEY: string;
-  /** E-mails convidados, separados por vírgula ("@dominio.com" libera o domínio todo). */
+  /** E-mails já aprovados de antemão, separados por vírgula ("@dominio.com" libera o domínio todo). */
   ALLOWED_EMAILS?: string;
+  /** Quem vê o painel administrativo (vírgula). Para os outros, o painel não existe. */
+  ADMIN_EMAILS?: string;
   /** Desenvolvimento: devolve o código de cadastro na resposta (para testes). */
   DEV_MODE?: string;
   RESEND_API_KEY?: string;
 }
 
-type App = { Bindings: Env; Variables: { userId: string } };
+type App = { Bindings: Env; Variables: { userId: string; email: string; admin: boolean } };
 type Ctx = Context<App>;
 
 const SESSION_TTL = 1000 * 60 * 60 * 24 * 90; // 90 dias
@@ -80,7 +82,7 @@ async function createSession(c: Ctx, userId: string): Promise<string> {
 
 async function sessionResponse(c: Ctx, userId: string) {
   const u = await c.env.DB.prepare(
-    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key FROM users WHERE id = ?",
+    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status FROM users WHERE id = ?",
   )
     .bind(userId)
     .first<Record<string, string>>();
@@ -92,8 +94,20 @@ async function sessionResponse(c: Ctx, userId: string) {
     wrappedMasterKey: u.wrapped_master_key,
     wrappedPrivateKey: u.wrapped_private_key,
     publicKey: u.public_key,
+    status: u.status as "approved" | "pending",
+    // Só aparece para quem é administrador: para os outros, o campo nem existe.
+    ...(isAdmin(c.env, u.email) && { admin: true as const }),
   };
 }
+
+const emailList = (raw: string | undefined) =>
+  (raw ?? "")
+    .split(/[\s,;]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+
+/** Administrador = e-mail em ADMIN_EMAILS. */
+const isAdmin = (env: Env, email: string) => emailList(env.ADMIN_EMAILS).includes(email.toLowerCase());
 
 // ---------------- Autenticação ----------------
 
@@ -104,13 +118,13 @@ const SIGNUP_CODE_TTL = 1000 * 60 * 15; // 15 minutos
 const SIGNUP_CODE_RESEND = 1000 * 30;
 const SIGNUP_CODE_ATTEMPTS = 5;
 
-/** Convite = e-mail na lista ALLOWED_EMAILS (e-mails ou "@dominio.com"). Sem lista, qualquer um pode criar conta. */
-function isInvited(env: Env, email: string): boolean {
-  const list = (env.ALLOWED_EMAILS ?? "")
-    .split(/[\s,;]+/)
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean);
-  return !list.length || list.some((e) => e === email || (e.startsWith("@") && email.endsWith(e)));
+/**
+ * Qualquer pessoa pode pedir para entrar; a conta fica esperando o administrador
+ * aceitar. Já entram liberados: o administrador e quem está em ALLOWED_EMAILS
+ * (e-mails ou "@dominio.com").
+ */
+function preApproved(env: Env, email: string): boolean {
+  return isAdmin(env, email) || emailList(env.ALLOWED_EMAILS).some((e) => e === email || (e.startsWith("@") && email.endsWith(e)));
 }
 
 const signupCodeHash = async (email: string, code: string) => toB64(await sha256(`signup:${email}:${code}`));
@@ -120,7 +134,6 @@ app.post("/auth/signup/start", async (c) => {
   const { email: raw } = await c.req.json<{ email: string }>();
   const email = normalizeEmail(raw);
   if (!EMAIL_RE.test(email)) fail(400, "E-mail inválido");
-  if (!isInvited(c.env, email)) fail(403, "Este e-mail não foi convidado. Peça para quem cuida do app adicionar você.");
   if (await c.env.DB.prepare("SELECT 1 FROM users WHERE email = ?").bind(email).first()) fail(409, "Este e-mail já tem conta");
 
   const prev = await c.env.DB.prepare("SELECT expires_at FROM signup_codes WHERE email = ?").bind(email).first<{ expires_at: number }>();
@@ -172,10 +185,11 @@ app.post("/auth/signup", async (c) => {
 
   const id = randomId();
   const salt = toB64(randomBytes(16));
+  const approved = preApproved(c.env, email);
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO users (id, email, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at, status, approved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       email,
@@ -186,9 +200,20 @@ app.post("/auth/signup", async (c) => {
       body.publicKey,
       body.wrappedPrivateKey,
       Date.now(),
+      approved ? "approved" : "pending",
+      approved ? Date.now() : null,
     ),
     c.env.DB.prepare("DELETE FROM signup_codes WHERE email = ?").bind(email),
   ]);
+  // Avisa o administrador que tem gente esperando.
+  if (!approved) {
+    const base = c.env.APP_URL || new URL(c.req.url).origin;
+    for (const admin of emailList(c.env.ADMIN_EMAILS)) {
+      c.executionCtx.waitUntil(
+        sendMail(c.env, admin, `Pedido de acesso ao Yfitops: ${email}`, `${email} pediu para entrar no Yfitops.\n\nPara aceitar ou recusar: ${base}/#/admin`),
+      );
+    }
+  }
   return c.json(await sessionResponse(c, id));
 });
 
@@ -291,17 +316,33 @@ app.post("/auth/reset/finish", async (c) => {
 
 // ---------------- Rotas autenticadas ----------------
 
+/** Rotas que quem ainda espera aprovação pode usar. */
+const PENDING_OK = ["/api/auth/me", "/api/auth/logout"];
+
 app.use("/*", async (c, next) => {
-  if (c.req.path.startsWith("/api/auth/") && c.req.path !== "/api/auth/logout") return next();
+  if (c.req.path.startsWith("/api/auth/") && !PENDING_OK.includes(c.req.path)) return next();
   const header = c.req.header("Authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : (c.req.query("t") ?? "");
   if (!token) fail(401, "Não autenticado");
-  const s = await c.env.DB.prepare("SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?")
+  const s = await c.env.DB.prepare(
+    "SELECT s.user_id, u.email, u.status FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
+  )
     .bind(toB64(await sha256(token)), Date.now())
-    .first<{ user_id: string }>();
+    .first<{ user_id: string; email: string; status: string }>();
   if (!s) fail(401, "Sessão expirada");
+  if (s.status !== "approved" && !PENDING_OK.includes(c.req.path)) fail(403, "Sua conta ainda espera aprovação");
   c.set("userId", s.user_id);
+  c.set("email", s.email);
+  c.set("admin", isAdmin(c.env, s.email));
   await next();
+});
+
+/** Situação da conta (o app pergunta de tempos em tempos enquanto espera aprovação). */
+app.get("/auth/me", async (c) => {
+  const row = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?").bind(c.get("userId")).first<{ status: string }>();
+  if (!c.get("admin")) return c.json({ status: row?.status });
+  const pending = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first<{ n: number }>();
+  return c.json({ status: row?.status, admin: true, pendingRequests: pending?.n ?? 0 });
 });
 
 app.post("/auth/logout", async (c) => {
@@ -357,8 +398,8 @@ const r2Key = (owner: string, id: string) => `${owner}/${id}`;
  */
 async function usage(env: Env) {
   const row = await env.DB.prepare(
-    `SELECT (SELECT COUNT(*) FROM songs WHERE status != 'merged') AS count,
-            (SELECT COALESCE(SUM(size + cover_size), 0) FROM songs WHERE status != 'merged')
+    `SELECT (SELECT COUNT(*) FROM songs WHERE status IN ('pending', 'ready')) AS count,
+            (SELECT COALESCE(SUM(size + cover_size), 0) FROM songs WHERE status IN ('pending', 'ready'))
               + (SELECT COALESCE(SUM(size), 0) FROM blobs) AS bytes`,
   ).first<{ count: number; bytes: number }>();
   return { count: row?.count ?? 0, bytes: row?.bytes ?? 0, quota: Math.floor(Number(env.QUOTA_GB) * 1024 ** 3) };
@@ -663,7 +704,9 @@ app.get("/songs/search", async (c) => {
 app.get("/songs/:id/:part{audio|cover}", async (c) => {
   const part = c.req.param("part") as "audio" | "cover";
   const song = await liveSong(c.env, checkId(c.req.param("id")));
-  if (!song || (song.status === "pending" && song.uploadedBy !== c.get("userId"))) fail(404, "Música não encontrada");
+  if (!song || song.status === "removed" || (song.status === "pending" && song.uploadedBy !== c.get("userId"))) {
+    fail(404, "Música não encontrada");
+  }
   if (part === "cover" && !song.coverSize) fail(404, "Música sem capa");
   return serveObject(c, songKey(song.id, part), part === "audio" ? "audio/mpeg" : "image/webp");
 });
@@ -673,20 +716,27 @@ app.post("/songs/resolve", async (c) => {
   const { ids } = await c.req.json<{ ids: string[] }>();
   if (!Array.isArray(ids) || ids.length > 5000) fail(400, "Lista inválida");
   const merged: Record<string, SongInfo> = {};
+  const removed: string[] = [];
   for (let i = 0; i < ids.length; i += 90) {
     const slice = ids.slice(i, i + 90).filter((x) => typeof x === "string" && ID_RE.test(x));
     if (!slice.length) continue;
-    const { results } = await c.env.DB.prepare(`SELECT id FROM songs WHERE status = 'merged' AND id IN (${slice.map(() => "?").join(",")})`)
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, status FROM songs WHERE status IN ('merged', 'removed') AND id IN (${slice.map(() => "?").join(",")})`,
+    )
       .bind(...slice)
-      .all<{ id: string }>();
+      .all<{ id: string; status: string }>();
     for (const r of results) {
-      const live = await liveSong(c.env, r.id);
-      if (!live) continue;
+      const live = r.status === "merged" ? await liveSong(c.env, r.id) : null;
+      // Apagada pelo administrador (ou juntada a uma que depois foi apagada): sai das bibliotecas.
+      if (!live || live.status === "removed") {
+        removed.push(r.id);
+        continue;
+      }
       const { status: _s, mergedInto: _m, uploadedBy: _u, ...info } = live;
       merged[r.id] = info;
     }
   }
-  return c.json({ merged });
+  return c.json({ merged, removed });
 });
 
 /**
@@ -736,7 +786,106 @@ async function tidyCatalog(env: Env) {
     }
   }
   console.log(`faxina do catálogo: ${stale.length} envios abandonados, ${merged} duplicadas juntadas`);
+  return { abandoned: stale.length, merged };
 }
+
+// ---------------- Painel administrativo ----------------
+// Só para ADMIN_EMAILS. Para os outros, estas rotas respondem igual a uma rota
+// que não existe: ninguém fica sabendo que o painel existe.
+
+app.use("/admin/*", async (c, next) => {
+  if (!c.get("admin")) return c.notFound();
+  await next();
+});
+
+/** Apaga a conta e tudo dela (biblioteca, arquivos criptografados, compartilhamentos). As músicas do catálogo ficam. */
+async function deleteUser(env: Env, id: string) {
+  let cursor: string | undefined;
+  do {
+    const page = await env.BUCKET.list({ prefix: `${id}/`, cursor });
+    if (page.objects.length) await env.BUCKET.delete(page.objects.map((o) => o.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM share_blobs WHERE share_id IN (SELECT id FROM shares WHERE from_user = ?1 OR to_user = ?1)").bind(id),
+    env.DB.prepare("DELETE FROM shares WHERE from_user = ?1 OR to_user = ?1").bind(id),
+    env.DB.prepare("DELETE FROM items WHERE owner = ?").bind(id),
+    env.DB.prepare("DELETE FROM blobs WHERE owner = ?").bind(id),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM recovery_tokens WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM signup_codes WHERE email = (SELECT email FROM users WHERE id = ?)").bind(id),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
+  ]);
+}
+
+/** Pessoas (pedidos de acesso primeiro) e o espaço da nuvem. */
+app.get("/admin/overview", async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT u.id, u.email, u.status, u.created_at AS createdAt,
+            (SELECT COUNT(*) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS songs,
+            (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS bytes,
+            (SELECT MAX(created_at) FROM sessions WHERE user_id = u.id) AS lastLogin
+     FROM users u ORDER BY (u.status = 'pending') DESC, u.created_at DESC`,
+  ).all<{ id: string; email: string; status: string; createdAt: number; songs: number; bytes: number; lastLogin: number | null }>();
+  return c.json({
+    usage: await usage(c.env),
+    users: results.map((u) => ({ ...u, admin: isAdmin(c.env, u.email), me: u.id === c.get("userId") })),
+  });
+});
+
+app.post("/admin/users/:id/approve", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const u = await c.env.DB.prepare("SELECT email FROM users WHERE id = ? AND status = 'pending'").bind(id).first<{ email: string }>();
+  if (!u) fail(404, "Pedido não encontrado");
+  await c.env.DB.prepare("UPDATE users SET status = 'approved', approved_at = ? WHERE id = ?").bind(Date.now(), id).run();
+  const base = c.env.APP_URL || new URL(c.req.url).origin;
+  c.executionCtx.waitUntil(sendMail(c.env, u.email, "Seu acesso ao Yfitops foi liberado", `Pode entrar: ${base}`));
+  return c.json({ ok: true });
+});
+
+/** Recusa um pedido ou tira o acesso de alguém (a conta é apagada). */
+app.delete("/admin/users/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  if (id === c.get("userId")) fail(400, "Você não pode apagar a própria conta por aqui");
+  const u = await c.env.DB.prepare("SELECT email FROM users WHERE id = ?").bind(id).first<{ email: string }>();
+  if (!u) return c.json({ ok: true });
+  if (isAdmin(c.env, u.email)) fail(400, "Não dá para apagar outro administrador");
+  await deleteUser(c.env, id);
+  return c.json({ ok: true });
+});
+
+/** Músicas do catálogo, com quem enviou. */
+app.get("/admin/songs", async (c) => {
+  const words = plain(c.req.query("q") ?? "").split(" ").filter(Boolean).slice(0, 6);
+  const order = { size: "s.size + s.cover_size DESC", title: "s.artist, s.title", recent: "s.created_at DESC" }[c.req.query("sort") ?? ""] ?? "s.created_at DESC";
+  const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+  const PAGE = 50;
+  const { results } = await c.env.DB.prepare(
+    `SELECT ${SONG_COLS}, s.created_at AS createdAt, u.email AS uploadedBy
+     FROM songs s LEFT JOIN users u ON u.id = s.uploaded_by
+     WHERE s.status = 'ready' ${words.map(() => "AND s.search LIKE ?").join(" ")}
+     ORDER BY ${order} LIMIT ? OFFSET ?`,
+  )
+    .bind(...words.map((w) => `%${w}%`), PAGE + 1, offset)
+    .all<SongInfo & { createdAt: number; uploadedBy: string | null }>();
+  return c.json({ songs: results.slice(0, PAGE), more: results.length > PAGE });
+});
+
+/** Apaga a música do sistema: some da nuvem e da biblioteca de todos. */
+app.delete("/admin/songs/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const row = await c.env.DB.prepare("SELECT status FROM songs WHERE id = ?").bind(id).first<{ status: string }>();
+  if (!row || row.status === "removed") return c.json({ ok: true });
+  await c.env.BUCKET.delete([songKey(id, "audio"), songKey(id, "cover")]);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE songs SET status = 'removed' WHERE id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM song_sources WHERE song_id = ?").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** Roda a faxina do catálogo agora (normalmente roda sozinha de madrugada). */
+app.post("/admin/tidy", async (c) => c.json(await tidyCatalog(c.env)));
 
 // ---------------- Compartilhamento ----------------
 
