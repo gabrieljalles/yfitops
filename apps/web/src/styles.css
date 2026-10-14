@@ -1028,6 +1028,10 @@ select {
   width: 100%;
   max-width: 520px;
 }
+.resolver-form {
+  width: 100%;
+  max-width: 420px;
+}
 .range-value {
   font-variant-numeric: tabular-nums;
   color: var(--accent);

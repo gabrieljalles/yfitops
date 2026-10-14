@@ -1,6 +1,7 @@
 import { artistFromChannel, splitArtistTitle } from "./artist";
 import { ACCEPTED_EXT, enqueue, trackIdBySource } from "./importer";
 import { createPlaylist, libraryStore, saveItem } from "./library";
+import { resolverFetch } from "./resolverConn";
 import { mergeTags } from "./search";
 
 // ---------------------------------------------------------------------------
@@ -19,12 +20,9 @@ import { mergeTags } from "./search";
 // caminho de quando você arrasta arquivos. Dedupe, conversão, criptografia e
 // upload continuam por conta do pipeline que já existe.
 //
-// Configure com VITE_RESOLVER_URL (ex.: http://127.0.0.1:8788).
+// Endereço e senha: veja resolverConn.ts (padrão VITE_RESOLVER_URL, ou Ajustes).
 // ---------------------------------------------------------------------------
 
-const RESOLVER =
-  (import.meta.env.VITE_RESOLVER_URL as string | undefined) ??
-  "http://127.0.0.1:8788";
 
 /** O texto é um link do YouTube? (mesma regra de hosts do resolver.) */
 export function isYouTubeLink(text: string): boolean {
@@ -144,6 +142,13 @@ const OFFLINE = () =>
 
 /** Lê o erro que o resolver mandou (JSON com error/kind/retryable). */
 async function errorFrom(res: Response): Promise<ResolverError> {
+  // Senha errada: para tudo, como se o resolver estivesse desligado.
+  if (res.status === 401)
+    return new ResolverError(
+      "Senha do servidor de importação errada. Confira em Ajustes → Importar por link.",
+      "offline",
+      false,
+    );
   try {
     const b = await res.json();
     return new ResolverError(
@@ -163,7 +168,7 @@ async function errorFrom(res: Response): Promise<ResolverError> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${RESOLVER}${path}`, {
+    res = await resolverFetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -594,8 +599,8 @@ async function download(t: ResolvedTrack, i: number): Promise<File> {
   // Passa pelo resolver: o googlevideo não libera CORS para o navegador.
   let r: Response;
   try {
-    r = await fetch(
-      `${RESOLVER}/stream?u=${encodeURIComponent(stream.streamUrl)}`,
+    r = await resolverFetch(
+      `/stream?u=${encodeURIComponent(stream.streamUrl)}`,
     );
   } catch {
     throw OFFLINE();

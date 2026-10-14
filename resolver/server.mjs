@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { Readable } from "node:stream";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Servidor "ajudante" do yfitops.
@@ -20,6 +21,15 @@ import { Readable } from "node:stream";
 // ---------------------------------------------------------------------------
 
 const PORT = Number(process.env.PORT) || 8788;
+// Senha do resolver. Com ela, só quem manda "Authorization: Bearer <senha>"
+// usa o servidor. Obrigatória antes de expor o resolver na internet (túnel):
+// sem ela, qualquer um baixaria do YouTube pelo seu IP.
+const TOKEN = process.env.RESOLVER_TOKEN || "";
+// Sites que podem chamar o resolver (separados por vírgula). Vazio = qualquer um.
+const ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim().replace(/\/$/, ""))
+  .filter(Boolean);
 const BIN = process.env.YTDLP_PATH || "yt-dlp"; // caminho do yt-dlp, se não estiver no PATH
 
 // Credenciais do Spotify (opcionais, só necessárias para playlists do Spotify).
@@ -798,13 +808,36 @@ function fail(res, err) {
   );
 }
 
+/** Cabeçalhos CORS, que dependem da origem do pedido (guardados em `res.cors`). */
+function corsFor(req) {
+  const origin = req.headers.origin;
+  const allowed = !ORIGINS.length ? "*" : ORIGINS.includes(origin) ? origin : "";
+  return {
+    ...(allowed && { "Access-Control-Allow-Origin": allowed }),
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    // O app publicado (https) chamando o resolver em 127.0.0.1: o Chrome
+    // pede essa licença extra ("Private Network Access") antes de deixar.
+    ...(req.headers["access-control-request-private-network"] && {
+      "Access-Control-Allow-Private-Network": "true",
+    }),
+    Vary: "Origin",
+  };
+}
+
+/** O pedido traz a senha certa? (Sem senha configurada, tudo passa.) */
+function authorized(req) {
+  if (!TOKEN) return true;
+  const sent = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const hash = (v) => createHash("sha256").update(v).digest();
+  return timingSafeEqual(hash(sent), hash(TOKEN));
+}
+
 function json(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    ...res.cors,
   });
   res.end(data);
 }
@@ -830,11 +863,20 @@ function readBody(req) {
 const server = createServer(async (req, res) => {
   const { pathname } = new URL(req.url, `http://${req.headers.host}`);
 
-  if (req.method === "OPTIONS") return json(res, 204, {});
+  res.cors = corsFor(req);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, res.cors);
+    return res.end();
+  }
 
-  // Checagem simples de saúde.
+  // Checagem de saúde. Pública, para o app conseguir dizer "senha errada"
+  // em vez de "resolver desligado".
   if (req.method === "GET" && pathname === "/health") {
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, locked: !!TOKEN, authorized: authorized(req) });
+  }
+
+  if (!authorized(req)) {
+    return json(res, 401, { error: "Senha do resolver errada ou ausente", kind: "auth" });
   }
 
   // POST /resolve { url }  =>  { provider, playlist, name, tracks: [{ videoId, title, artist, duration }] }
@@ -1063,7 +1105,7 @@ const server = createServer(async (req, res) => {
               upstream.headers.get("content-type") ??
               "application/octet-stream",
             ...(total && { "Content-Length": total }),
-            "Access-Control-Allow-Origin": "*",
+            ...res.cors,
           });
         }
         let got = 0;
@@ -1089,4 +1131,10 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`resolver yfitops rodando em http://127.0.0.1:${PORT}`);
   console.log(`yt-dlp: ${BIN}  (defina YTDLP_PATH se não estiver no PATH)`);
+  console.log(
+    TOKEN
+      ? "senha: ligada (RESOLVER_TOKEN)"
+      : "senha: DESLIGADA — defina RESOLVER_TOKEN antes de expor na internet",
+  );
+  if (ORIGINS.length) console.log(`sites liberados: ${ORIGINS.join(", ")}`);
 });

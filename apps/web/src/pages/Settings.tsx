@@ -15,6 +15,7 @@ import { useStore } from "../lib/observable";
 import { askNotifyPermission, notifyPermission } from "../lib/notify";
 import { canCrossfade, stop } from "../lib/player";
 import { prefsStore, setPref } from "../lib/prefs";
+import { checkResolver, DEFAULT_RESOLVER, type ResolverStatus } from "../lib/resolverConn";
 import { StorageBar } from "../components/StorageBar";
 import { logout, sessionStore } from "../lib/session";
 import { formatBytes } from "../lib/tracks";
@@ -135,6 +136,8 @@ export function SettingsPage() {
           />
         </label>
       </section>
+
+      <ResolverSettings />
 
       <section>
         <h2>Qualidade ao tocar</h2>
@@ -269,5 +272,72 @@ function Segmented<T extends string>({
         </button>
       ))}
     </div>
+  );
+}
+
+const RESOLVER_STATUS: Record<ResolverStatus, string> = {
+  ok: "Conectado.",
+  auth: "O servidor respondeu, mas a senha está errada ou faltando.",
+  offline: "Não respondeu. Ele está ligado nesse endereço?",
+};
+
+/** Endereço e senha do servidor de importação (resolver), deste aparelho. */
+function ResolverSettings() {
+  const prefs = useStore(prefsStore);
+  const [url, setUrl] = useState(prefs.resolverUrl);
+  const [token, setToken] = useState(prefs.resolverToken);
+  const [status, setStatus] = useState<ResolverStatus | "testing" | null>(null);
+
+  async function save() {
+    setPref("resolverUrl", url.trim());
+    setPref("resolverToken", token.trim());
+    setStatus("testing");
+    setStatus(await checkResolver());
+  }
+
+  return (
+    <section>
+      <h2>Importar por link</h2>
+      <p className="muted small">
+        O servidor que lê links do YouTube, Spotify e Deezer roda no seu computador. Vale só neste aparelho.
+      </p>
+      <form
+        className="form resolver-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        <label>
+          <span>Endereço</span>
+          <input
+            type="url"
+            value={url}
+            placeholder={DEFAULT_RESOLVER}
+            onChange={(e) => setUrl(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          <span>Senha (RESOLVER_TOKEN)</span>
+          <input
+            type="password"
+            value={token}
+            placeholder="sem senha"
+            onChange={(e) => setToken(e.target.value)}
+            autoComplete="off"
+          />
+        </label>
+        <button type="submit" className="primary" disabled={status === "testing"}>
+          {status === "testing" ? "testando…" : "salvar e testar"}
+        </button>
+      </form>
+      {status && status !== "testing" && (
+        <p className={`small ${status === "ok" ? "muted" : "error"}`} role="status">
+          {RESOLVER_STATUS[status]}
+        </p>
+      )}
+    </section>
   );
 }

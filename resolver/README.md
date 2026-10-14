@@ -71,6 +71,12 @@ Variáveis opcionais:
 - `YTDLP_PATH` — caminho do binário, se não estiver no `PATH`.
 - `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` — para importar links do Spotify (veja
   abaixo).
+- `RESOLVER_TOKEN` — senha do resolver. Com ela, só o app com a mesma senha (Ajustes →
+  **Importar por link**) consegue usar o servidor. **Obrigatória antes de expor o resolver
+  na internet** (ex.: Cloudflare Tunnel); sem ela, qualquer um baixaria do YouTube pelo seu IP.
+  Gere uma com `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`.
+- `ALLOWED_ORIGINS` — sites que podem chamar o resolver, separados por vírgula (ex.:
+  `https://yfitops.suaconta.workers.dev,http://localhost:5173`). Vazio = qualquer site.
 
 ### Credenciais do Spotify (para playlists do Spotify)
 
@@ -130,6 +136,14 @@ VITE_RESOLVER_URL=http://127.0.0.1:8788
 ```
 
 Se não definir, o app usa `http://127.0.0.1:8788` por padrão.
+
+Cada aparelho também pode trocar o endereço e informar a senha em **Ajustes → Importar por
+link** (fica salvo só naquele aparelho, nunca no código publicado). O botão **salvar e
+testar** diz se o resolver respondeu e se a senha está certa.
+
+O app publicado (https) consegue falar com o resolver em `127.0.0.1` no mesmo computador: o
+resolver responde ao pedido de licença do Chrome para rede local
+(`Access-Control-Allow-Private-Network`).
 
 ## Endpoints
 

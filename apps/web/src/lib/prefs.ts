@@ -13,9 +13,20 @@ export interface Prefs {
   crossfade: number;
   /** Avisar quando uma importação/envio terminar com o app em segundo plano. */
   notify: boolean;
+  /** Endereço do resolver neste aparelho ("" = o padrão do build). */
+  resolverUrl: string;
+  /** Senha do resolver (RESOLVER_TOKEN), se ele tiver uma. */
+  resolverToken: string;
 }
 
-const DEFAULTS: Prefs = { theme: "system", textSize: "normal", crossfade: 0, notify: true };
+const DEFAULTS: Prefs = {
+  theme: "system",
+  textSize: "normal",
+  crossfade: 0,
+  notify: true,
+  resolverUrl: "",
+  resolverToken: "",
+};
 const KEY = "prefs";
 
 function load(): Prefs {
