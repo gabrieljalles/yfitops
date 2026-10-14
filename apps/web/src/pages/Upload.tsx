@@ -1,32 +1,65 @@
 import { useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { clearFinished, enqueue, jobsStore } from "../lib/importer";
-import { isSpotifyLink, isYouTubeLink } from "../lib/resolver";
-import { dismissImportResult, linkImportStore, retryLinkImport, setImportLink, skipAllPending, startLinkImport, toggleSkip } from "../lib/linkImport";
+import {
+  importPlaylist,
+  importTracks,
+  isSpotifyLink,
+  isYouTubeLink,
+  isImportLink,
+  type PlaylistResult,
+} from "../lib/resolver";
 import { useStore } from "../lib/observable";
 import { formatBytes } from "../lib/tracks";
 import { openTrack } from "../lib/ui";
-import { navigate } from "../router";
 
 export function UploadPage() {
   const jobs = useStore(jobsStore);
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
-  // Vem de um store (e não de useState) para sobreviver à troca de tela.
-  const { link, busy, note, error: linkError, result, tracks, current, skipped } = useStore(linkImportStore);
-  /** Ainda não começaram: dá para ignorar (ou desfazer) clicando. */
-  const upcoming = busy ? tracks.slice(current + 1) : [];
-  const toSkip = upcoming.filter((t) => !skipped.has(t)).length;
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [linkError, setLinkError] = useState("");
+  const [result, setResult] = useState<PlaylistResult | null>(null);
   const finished = jobs.some((j) =>
     ["pronto", "já existe", "erro"].includes(j.status),
   );
 
-  const fetchPlaylist = startLinkImport;
-  const retryFailed = retryLinkImport;
+  async function run(work: () => Promise<PlaylistResult>) {
+    if (busy) return;
+    setBusy(true);
+    setLinkError("");
+    setResult(null);
+    try {
+      const r = await work();
+      setResult(r);
+      if (!r.failed.length) setLink("");
+    } catch (e) {
+      setLinkError((e as Error).message);
+    } finally {
+      setBusy(false);
+      setNote("");
+    }
+  }
+  const fetchPlaylist = () =>
+    link.trim() && run(() => importPlaylist(link.trim(), setNote));
+  const retryFailed = () =>
+    result &&
+    run(() =>
+      importTracks(
+        result.failed.map((f) => f.track),
+        setNote,
+      ),
+    );
   const bigBatch = jobs.filter((j) => j.status === "na fila").length > 20;
 
   /** Serviço do link colado: muda a cor da borda, o ícone e a cor do botão. */
-  const brand = isYouTubeLink(link) ? "youtube" : isSpotifyLink(link) ? "spotify" : null;
+  const brand = isYouTubeLink(link)
+    ? "youtube"
+    : isSpotifyLink(link)
+      ? "spotify"
+      : null;
 
   return (
     <div className="page">
@@ -60,23 +93,26 @@ export function UploadPage() {
         />
       </div>
 
-      <div className={`link-import${brand ? ` linked ${brand}` : ""}`}>
-        <label className="link-field">
+      <div className="link-import">
+        <label className={`link-field${brand ? ` brand ${brand}` : ""}`}>
           <span className="link-brand" aria-hidden="true">
-            <Icon name={brand === "spotify" ? "spotify" : "youtube"} size={20} />
+            <Icon
+              name={brand === "spotify" ? "spotify" : "youtube"}
+              size={20}
+            />
           </span>
           <input
             type="url"
             value={link}
             placeholder="ou cole um link do YouTube ou do Spotify"
             disabled={busy}
-            onChange={(e) => setImportLink(e.target.value)}
+            onChange={(e) => setLink(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && fetchPlaylist()}
           />
         </label>
         <button
           className="primary"
-          disabled={busy || !link.trim()}
+          disabled={busy || !isImportLink(link)}
           onClick={fetchPlaylist}
         >
           {busy ? "importando..." : "importar"}
@@ -88,42 +124,6 @@ export function UploadPage() {
         )}
       </div>
 
-      {upcoming.length > 0 && (
-        <div className="import-queue">
-          <div className="section-head">
-            <span className="small">
-              <strong>Ainda vão ser baixadas</strong> · {toSkip} de {upcoming.length}
-              <span className="muted"> · clique para ignorar</span>
-            </span>
-            {toSkip > 0 && (
-              <button className="chip danger" onClick={skipAllPending}>
-                <Icon name="close" size={14} /> ignorar todas
-              </button>
-            )}
-          </div>
-          <ul>
-            {upcoming.map((t, i) => {
-              const off = skipped.has(t);
-              return (
-                <li key={`${t.videoId || t.spotifyId || t.title}-${i}`}>
-                  <button
-                    className={off ? "skipped" : ""}
-                    onClick={() => toggleSkip(t)}
-                    title={off ? "Vai ser ignorada · clique para baixar de novo" : "Clique para não baixar esta"}
-                  >
-                    <span className="track-text">
-                      <span className="track-title">{t.title}</span>
-                      <span className="track-sub">{off ? "ignorada · clique para desfazer" : t.artist}</span>
-                    </span>
-                    <Icon name={off ? "plus" : "close"} size={16} />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
       {result && !busy && (
         <div className="import-result">
           <p>
@@ -131,31 +131,18 @@ export function UploadPage() {
             {result.existing.length > 0 && (
               <>
                 {" · "}
-                <strong>{result.existing.length}</strong> já estava(m) na biblioteca
-              </>
-            )}
-            {result.skipped.length > 0 && (
-              <>
-                {" · "}
-                <strong>{result.skipped.length}</strong> ignorada(s)
+                <strong>{result.existing.length}</strong> já estava(m) na
+                biblioteca
               </>
             )}
             {result.failed.length > 0 && (
               <>
                 {" · "}
-                <strong className="err">{result.failed.length}</strong> não puderam ser baixada(s)
+                <strong className="err">{result.failed.length}</strong> não
+                puderam ser baixada(s)
               </>
             )}
           </p>
-          {result.playlist && (
-            <p className="small">
-              Tudo ligado à playlist{" "}
-              <button className="link" onClick={() => navigate(`/playlist/${result.playlist!.id}`)}>
-                {result.playlist.name}
-              </button>
-              {result.failed.length > 0 && " (as que faltam entram nela ao tentar de novo)"}
-            </p>
-          )}
           {result.failed.length > 0 && (
             <>
               <ul>
@@ -167,11 +154,13 @@ export function UploadPage() {
                 ))}
               </ul>
               <div className="import-result-actions">
-                <span className="muted small">Quer tentar baixar de novo as que faltaram?</span>
+                <span className="muted small">
+                  Quer tentar baixar de novo as que faltaram?
+                </span>
                 <button className="primary" onClick={retryFailed}>
                   tentar de novo ({result.failed.length})
                 </button>
-                <button className="link" onClick={dismissImportResult}>
+                <button className="link" onClick={() => setResult(null)}>
                   agora não
                 </button>
               </div>
