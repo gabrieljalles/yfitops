@@ -1471,6 +1471,9 @@ select {
   margin: 0;
   font-size: 0.92rem;
   line-height: 1.45;
+  /* Quebras de linha da mensagem e links longos (ex.: link de senha nova). */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .dialog-input {
   background: var(--bg);

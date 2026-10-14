@@ -53,6 +53,24 @@ export default function AdminPage() {
 
   const approve = (u: AdminUser) => attempt(async () => (await api.json(`/admin/users/${u.id}/approve`, { method: "POST" }), load()), `${u.email} pode entrar`);
 
+  /** Para quem esqueceu a senha: o link vai por mensagem (o app não manda e-mail para todos). */
+  const resetLink = (u: AdminUser) =>
+    attempt(async () => {
+      const { link } = await api.json<{ link: string }>(`/admin/users/${u.id}/reset-link`, { method: "POST" });
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(link);
+        copied = true;
+      } catch {
+        /* sem permissão para copiar: mostra o link para copiar à mão */
+      }
+      await confirmDialog({
+        title: copied ? "Link copiado" : "Link de senha nova",
+        message: `${copied ? "Mande para" : "Copie e mande para"} ${u.email} (WhatsApp, por exemplo). Vale por 1 hora, e a pessoa não perde nada da biblioteca.\n\n${link}`,
+        confirm: "ok",
+      });
+    });
+
   const remove = async (u: AdminUser, pendingRequest: boolean) => {
     const ok = await confirmDialog(
       pendingRequest
@@ -135,11 +153,16 @@ export default function AdminPage() {
                   desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · trouxe {musicas(u.songs)} ({formatBytes(u.bytes)})
                 </small>
               </span>
-              {!u.admin && (
-                <button className="link danger" onClick={() => void remove(u, false)}>
-                  tirar acesso
+              <span className="row">
+                <button className="link" onClick={() => void resetLink(u)}>
+                  link de senha nova
                 </button>
-              )}
+                {!u.admin && (
+                  <button className="link danger" onClick={() => void remove(u, false)}>
+                    tirar acesso
+                  </button>
+                )}
+              </span>
             </li>
           ))}
         </ul>

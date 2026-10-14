@@ -34,6 +34,14 @@ interface Env {
   ALLOWED_EMAILS?: string;
   /** Quem vê o painel administrativo (vírgula). Para os outros, o painel não existe. */
   ADMIN_EMAILS?: string;
+  /**
+   * "on": todo cadastro confirma o e-mail com um código (precisa de domínio no Resend).
+   * Desligado: só a aprovação do administrador; o código existe só para o e-mail
+   * de administrador (para ninguém criar essa conta antes dele).
+   */
+  EMAIL_CODES?: string;
+  /** Caixa que recebe os e-mails do administrador (códigos, pedidos, links) quando o Resend só entrega nela. */
+  ADMIN_MAILBOX?: string;
   /** Consumo no painel: chave da Cloudflare só de leitura de estatísticas (secret). */
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -117,7 +125,21 @@ const isAdmin = (env: Env, email: string) => emailList(env.ADMIN_EMAILS).include
 
 // ---------------- Autenticação ----------------
 
-app.get("/auth/config", (c) => c.json({ escrowPublicKey: c.env.ESCROW_PUBLIC_KEY }));
+app.get("/auth/config", (c) => c.json({ escrowPublicKey: c.env.ESCROW_PUBLIC_KEY, emailCodes: emailCodes(c.env) }));
+
+const emailCodes = (env: Env) => env.EMAIL_CODES === "on";
+
+/** O cadastro desse e-mail precisa do código? (Sempre, para o administrador.) */
+const needsCode = (env: Env, email: string) => emailCodes(env) || isAdmin(env, email);
+
+/** Para onde vai o e-mail de alguém: o do administrador pode ir para a caixa dele (ADMIN_MAILBOX). */
+const inbox = (env: Env, email: string) => (!emailCodes(env) && isAdmin(env, email) && env.ADMIN_MAILBOX) || email;
+
+/** "gabriel@gmail.com" → "g•••••l@gmail.com" (para dizer onde o código chegou sem expor o endereço). */
+const maskEmail = (e: string) => e.replace(/^(.)(.*)(.)@/, (_, a: string, mid: string, b: string) => `${a}${"•".repeat(Math.min(6, mid.length))}${b}@`);
+
+/** Sem código por e-mail, um limite de pedidos esperando evita que encham o painel. */
+const MAX_PENDING = 30;
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const SIGNUP_CODE_TTL = 1000 * 60 * 15; // 15 minutos
@@ -130,17 +152,23 @@ const SIGNUP_CODE_ATTEMPTS = 5;
  * (e-mails ou "@dominio.com").
  */
 function preApproved(env: Env, email: string): boolean {
-  return isAdmin(env, email) || emailList(env.ALLOWED_EMAILS).some((e) => e === email || (e.startsWith("@") && email.endsWith(e)));
+  if (isAdmin(env, email)) return true;
+  // Sem o código, qualquer um poderia usar um e-mail da lista: aí também espera aprovação.
+  return emailCodes(env) && emailList(env.ALLOWED_EMAILS).some((e) => e === email || (e.startsWith("@") && email.endsWith(e)));
 }
 
 const signupCodeHash = async (email: string, code: string) => toB64(await sha256(`signup:${email}:${code}`));
 
-/** Etapa 1 do cadastro: envia um código de 6 dígitos para o e-mail. */
+/** Etapa 1 do cadastro: diz se precisa de código e, se precisar, envia um de 6 dígitos. */
 app.post("/auth/signup/start", async (c) => {
   const { email: raw } = await c.req.json<{ email: string }>();
   const email = normalizeEmail(raw);
   if (!EMAIL_RE.test(email)) fail(400, "E-mail inválido");
   if (await c.env.DB.prepare("SELECT 1 FROM users WHERE email = ?").bind(email).first()) fail(409, "Este e-mail já tem conta");
+  if (!needsCode(c.env, email)) {
+    await checkPendingRoom(c.env);
+    return c.json({ ok: true, codeRequired: false });
+  }
 
   const prev = await c.env.DB.prepare("SELECT expires_at FROM signup_codes WHERE email = ?").bind(email).first<{ expires_at: number }>();
   if (prev && prev.expires_at - SIGNUP_CODE_TTL + SIGNUP_CODE_RESEND > Date.now()) fail(429, "Aguarde alguns segundos para pedir outro código");
@@ -150,9 +178,10 @@ app.post("/auth/signup/start", async (c) => {
   await c.env.DB.prepare("INSERT OR REPLACE INTO signup_codes (email, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0)")
     .bind(email, await signupCodeHash(email, code), Date.now() + SIGNUP_CODE_TTL)
     .run();
+  const to = inbox(c.env, email);
   const sent = await sendMail(
     c.env,
-    email,
+    to,
     `Seu código do Yfitops: ${code}`,
     `Seu código para criar a conta no Yfitops é:
 
@@ -166,8 +195,19 @@ Ele vale por 15 minutos. Se não foi você, ignore este e-mail.`,
     fail(502, "O envio de e-mails ainda não foi configurado no servidor. Fale com quem cuida do app.");
   }
   // Em DEV_MODE o código volta na resposta, para testes e para usar sem e-mail configurado.
-  return c.json({ ok: true, mailed: sent === "sent", ...(c.env.DEV_MODE ? { devCode: code } : {}) });
+  return c.json({
+    ok: true,
+    codeRequired: true,
+    mailed: sent === "sent",
+    sentTo: to === email ? email : maskEmail(to),
+    ...(c.env.DEV_MODE ? { devCode: code } : {}),
+  });
 });
+
+async function checkPendingRoom(env: Env) {
+  const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first<{ n: number }>();
+  if ((n?.n ?? 0) >= MAX_PENDING) fail(429, "Muitos pedidos esperando aprovação agora. Tente de novo mais tarde.");
+}
 
 /** Etapa 2: confere o código e cria a conta. */
 app.post("/auth/signup", async (c) => {
@@ -177,15 +217,19 @@ app.post("/auth/signup", async (c) => {
   for (const k of ["authKey", "wrappedMasterKey", "escrowMasterKey", "publicKey", "wrappedPrivateKey"] as const) {
     if (typeof body[k] !== "string" || !body[k]) fail(400, `Campo ausente: ${k}`);
   }
-  const row = await c.env.DB.prepare("SELECT code_hash, expires_at, attempts FROM signup_codes WHERE email = ?")
-    .bind(email)
-    .first<{ code_hash: string; expires_at: number; attempts: number }>();
-  if (!row || row.expires_at < Date.now()) fail(400, "O código expirou. Peça um novo.");
-  if (row.attempts >= SIGNUP_CODE_ATTEMPTS) fail(429, "Muitas tentativas. Peça um novo código.");
-  const given = await signupCodeHash(email, String(body.code ?? "").replace(/\D/g, ""));
-  if (!equalBytes(fromB64(given), fromB64(row.code_hash))) {
-    await c.env.DB.prepare("UPDATE signup_codes SET attempts = attempts + 1 WHERE email = ?").bind(email).run();
-    fail(400, "Código incorreto");
+  if (needsCode(c.env, email)) {
+    const row = await c.env.DB.prepare("SELECT code_hash, expires_at, attempts FROM signup_codes WHERE email = ?")
+      .bind(email)
+      .first<{ code_hash: string; expires_at: number; attempts: number }>();
+    if (!row || row.expires_at < Date.now()) fail(400, "O código expirou. Peça um novo.");
+    if (row.attempts >= SIGNUP_CODE_ATTEMPTS) fail(429, "Muitas tentativas. Peça um novo código.");
+    const given = await signupCodeHash(email, String(body.code ?? "").replace(/\D/g, ""));
+    if (!equalBytes(fromB64(given), fromB64(row.code_hash))) {
+      await c.env.DB.prepare("UPDATE signup_codes SET attempts = attempts + 1 WHERE email = ?").bind(email).run();
+      fail(400, "Código incorreto");
+    }
+  } else {
+    await checkPendingRoom(c.env);
   }
   if (await c.env.DB.prepare("SELECT 1 FROM users WHERE email = ?").bind(email).first()) fail(409, "Este e-mail já tem conta");
 
@@ -216,7 +260,7 @@ app.post("/auth/signup", async (c) => {
     const base = c.env.APP_URL || new URL(c.req.url).origin;
     for (const admin of emailList(c.env.ADMIN_EMAILS)) {
       c.executionCtx.waitUntil(
-        sendMail(c.env, admin, `Pedido de acesso ao Yfitops: ${email}`, `${email} pediu para entrar no Yfitops.\n\nPara aceitar ou recusar: ${base}/#/admin`),
+        sendMail(c.env, inbox(c.env, admin), `Pedido de acesso ao Yfitops: ${email}`, `${email} pediu para entrar no Yfitops.\n\nPara aceitar ou recusar: ${base}/#/admin`),
       );
     }
   }
@@ -238,18 +282,14 @@ app.post("/auth/forgot", async (c) => {
   const u = await c.env.DB.prepare("SELECT id, email FROM users WHERE email = ?")
     .bind(normalizeEmail(email))
     .first<{ id: string; email: string }>();
-  // Sempre responde igual, para não revelar quais e-mails têm conta.
-  if (u) {
-    const token = toB64(randomBytes(32));
-    await c.env.DB.prepare("INSERT INTO recovery_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
-      .bind(toB64(await sha256(token)), u.id, Date.now() + RECOVERY_TTL)
-      .run();
-    const base = c.env.APP_URL || new URL(c.req.url).origin;
-    const link = `${base}/#/redefinir?token=${token}`;
+  // Sempre responde igual, para não revelar quais e-mails têm conta. Sem código por
+  // e-mail, só o administrador recebe o link assim; os outros pedem a ele (painel).
+  if (u && (emailCodes(c.env) || isAdmin(c.env, u.email))) {
+    const link = await recoveryLink(c, u.id);
     c.executionCtx.waitUntil(
       sendMail(
         c.env,
-        u.email,
+        inbox(c.env, u.email),
         "Redefinir sua senha do Yfitops",
         `Para criar uma nova senha, abra este link (válido por 1 hora):
 
@@ -261,6 +301,16 @@ Se não foi você, ignore este e-mail.`,
   }
   return c.json({ ok: true });
 });
+
+/** Cria um link de "nova senha" que vale por 1 hora. */
+async function recoveryLink(c: Ctx, userId: string): Promise<string> {
+  const token = toB64(randomBytes(32));
+  await c.env.DB.prepare("INSERT INTO recovery_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
+    .bind(toB64(await sha256(token)), userId, Date.now() + RECOVERY_TTL)
+    .run();
+  const base = c.env.APP_URL || new URL(c.req.url).origin;
+  return `${base}/#/redefinir?token=${token}`;
+}
 
 /**
  * Envia e-mail pelo Resend. Sem RESEND_API_KEY, só registra no log e retorna "logged"
@@ -847,6 +897,14 @@ app.post("/admin/users/:id/approve", async (c) => {
   const base = c.env.APP_URL || new URL(c.req.url).origin;
   c.executionCtx.waitUntil(sendMail(c.env, u.email, "Seu acesso ao Yfitops foi liberado", `Pode entrar: ${base}`));
   return c.json({ ok: true });
+});
+
+/** Link de "nova senha" para mandar à pessoa (por mensagem): vale por 1 hora. */
+app.post("/admin/users/:id/reset-link", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const u = await c.env.DB.prepare("SELECT 1 FROM users WHERE id = ? AND status = 'approved'").bind(id).first();
+  if (!u) fail(404, "Conta não encontrada");
+  return c.json({ link: await recoveryLink(c, id) });
 });
 
 /** Recusa um pedido ou tira o acesso de alguém (a conta é apagada). */

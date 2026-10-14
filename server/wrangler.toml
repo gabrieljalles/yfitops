@@ -25,6 +25,12 @@ MAIL_FROM = "Yfitops <onboarding@resend.dev>"
 # Quem vê o painel administrativo (aprova pedidos de acesso, apaga músicas do
 # sistema). Para os outros, o painel não existe.
 ADMIN_EMAILS = "gabriel.jalleswork@hotmail.com"
+# Cadastro sem código por e-mail (o Resend sem domínio só entrega na caixa do dono
+# da conta): basta a aprovação do administrador. O código continua existindo só
+# para o e-mail de administrador e vai para a caixa abaixo. Com um domínio
+# verificado no Resend, mude EMAIL_CODES para "on".
+EMAIL_CODES = "off"
+ADMIN_MAILBOX = "gabriel.jallesworkg@gmail.com"
 # Consumo no painel (os números vêm da API de Analytics da Cloudflare).
 # A chave vai como segredo: npx wrangler secret put CF_API_TOKEN
 CF_ACCOUNT_ID = "257b7ba9c259f0ace1681beb9e33dfed"

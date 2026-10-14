@@ -109,12 +109,28 @@ export async function refreshAccount() {
   }
 }
 
-/**
- * Etapa 1 do cadastro: pede ao servidor um código de 6 dígitos por e-mail.
- * Em desenvolvimento sem e-mail configurado, o servidor devolve o código (devCode).
- */
-export async function startSignup(email: string): Promise<{ mailed: boolean; devCode?: string }> {
+export interface SignupStart {
+  /** false = sem código: a conta é criada direto e espera a aprovação. */
+  codeRequired: boolean;
+  mailed?: boolean;
+  /** Para onde o código foi (pode ser outra caixa, mascarada). */
+  sentTo?: string;
+  /** Desenvolvimento sem e-mail configurado: o próprio código. */
+  devCode?: string;
+}
+
+/** Etapa 1 do cadastro: o servidor diz se precisa de código e, se precisar, envia por e-mail. */
+export async function startSignup(email: string): Promise<SignupStart> {
   return api.json("/auth/signup/start", { method: "POST", json: { email } });
+}
+
+/** O servidor manda códigos e links por e-mail para todos? (Senão, quem cuida do app manda o link.) */
+export async function emailCodesEnabled(): Promise<boolean> {
+  try {
+    return (await api.json<{ emailCodes?: boolean }>("/auth/config")).emailCodes === true;
+  } catch {
+    return true;
+  }
 }
 
 /** Etapa 2: cria a conta com o código recebido. */

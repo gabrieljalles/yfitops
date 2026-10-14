@@ -2,7 +2,18 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Vinyl } from "../components/Cover";
 import { Notice, type Tone } from "../components/Notice";
 import { ApiError } from "../lib/api";
-import { forgotPassword, login, logout, refreshAccount, resetPassword, sessionStore, signup, startSignup } from "../lib/session";
+import {
+  emailCodesEnabled,
+  forgotPassword,
+  login,
+  logout,
+  refreshAccount,
+  resetPassword,
+  sessionStore,
+  signup,
+  startSignup,
+  type SignupStart,
+} from "../lib/session";
 import { useStore } from "../lib/observable";
 import { navigate } from "../router";
 
@@ -168,6 +179,11 @@ export function AuthPage() {
   const [password2, setPassword2] = useState("");
   const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
+  /** Sem código por e-mail, a senha nova vem por um link que quem cuida do app manda. */
+  const [emailLinks, setEmailLinks] = useState(true);
+  useEffect(() => {
+    void emailCodesEnabled().then(setEmailLinks);
+  }, []);
 
   const { busy, issue, setIssue, submit, clear, formRef } = useForm(async () => {
     if (mode === "criar" && step === "codigo") {
@@ -184,23 +200,33 @@ export function AuthPage() {
     } else if (mode === "criar") {
       checkPassword(password, password2);
       const res = await startSignup(email).catch((e) => fromServer(e, "email"));
+      // Sem código: a conta já é criada e fica esperando a aprovação.
+      if (!res.codeRequired) {
+        await signup(email, password, "").catch((e) => fromServer(e, "email"));
+        return;
+      }
       setStep("codigo");
       return codeSent(res, "Enviamos um código para");
     } else {
       await forgotPassword(email);
       setSent(true);
-      return { tone: "ok", message: "Se existir uma conta com esse e-mail, o link chega em instantes. Ele vale por 1 hora." };
+      return {
+        tone: "ok",
+        message: emailLinks
+          ? "Se existir uma conta com esse e-mail, o link chega em instantes. Ele vale por 1 hora."
+          : "Peça a quem cuida do app um link para criar uma senha nova. Ele chega por mensagem e vale por 1 hora.",
+      };
     }
   });
 
   /** Sem e-mail configurado (desenvolvimento), mostra e já preenche o código. */
-  const codeSent = (res: { mailed: boolean; devCode?: string }, prefix: string): Issue => {
+  const codeSent = (res: SignupStart, prefix: string): Issue => {
     if (!res.mailed && res.devCode) {
       setCode(res.devCode);
       return { tone: "warn", message: `Modo de teste: o e-mail não foi enviado. Seu código é ${res.devCode}` };
     }
     setCode("");
-    return { tone: "ok", message: `${prefix} ${email.trim()}` };
+    return { tone: "ok", message: `${prefix} ${res.sentTo ?? email.trim()}` };
   };
 
   const switchTo = (m: Mode) => {
@@ -282,7 +308,9 @@ export function AuthPage() {
               : mode === "entrar"
                 ? "Entrar"
                 : mode === "esqueci"
-                  ? "Enviar link"
+                  ? emailLinks
+                    ? "Enviar link"
+                    : "Ok"
                   : codeStep
                     ? "Criar conta"
                     : "Continuar"}
