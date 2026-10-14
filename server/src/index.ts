@@ -34,6 +34,12 @@ interface Env {
   ALLOWED_EMAILS?: string;
   /** Quem vê o painel administrativo (vírgula). Para os outros, o painel não existe. */
   ADMIN_EMAILS?: string;
+  /** Consumo no painel: chave da Cloudflare só de leitura de estatísticas (secret). */
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
+  D1_DATABASE_ID: string;
+  R2_BUCKET_NAME: string;
+  WORKER_NAME: string;
   /** Desenvolvimento: devolve o código de cadastro na resposta (para testes). */
   DEV_MODE?: string;
   RESEND_API_KEY?: string;
@@ -886,6 +892,106 @@ app.delete("/admin/songs/:id", async (c) => {
 
 /** Roda a faxina do catálogo agora (normalmente roda sozinha de madrugada). */
 app.post("/admin/tidy", async (c) => c.json(await tidyCatalog(c.env)));
+
+// ---------------- Consumo da Cloudflare (painel) ----------------
+// Os números vêm da própria Cloudflare (API de Analytics): são os mesmos que ela
+// usa para cobrar. Só é consultado quando o administrador clica em "atualizar".
+
+/** Operações do R2 que contam como Classe A (gravar/listar) e Classe B (ler). Apagar é grátis. */
+const R2_CLASS_A = new Set([
+  "ListBuckets", "PutBucket", "ListObjects", "PutObject", "CopyObject", "CompleteMultipartUpload", "CreateMultipartUpload",
+  "LifecycleStorageTierTransition", "ListMultipartUploads", "UploadPart", "UploadPartCopy", "ListParts", "PutBucketEncryption",
+  "PutBucketCors", "PutBucketLifecycleConfiguration",
+]);
+const R2_CLASS_B = new Set([
+  "HeadBucket", "HeadObject", "GetObject", "UsageSummary", "GetBucketEncryption", "GetBucketLocation", "GetBucketCors",
+  "GetBucketLifecycleConfiguration",
+]);
+
+interface GqlDay<T> {
+  sum: T;
+  dimensions: { date?: string; actionType?: string };
+}
+
+app.post("/admin/consumption", async (c) => {
+  const env = c.env;
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return c.json({ configured: false });
+
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+  const elapsedDays = Math.max(1 / 24, (now.getTime() - start.getTime()) / 86_400_000);
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const q = (v: string) => JSON.stringify(v);
+
+  // Valores no próprio texto (são nossos, não vêm de quem usa o app).
+  const query = `{
+    viewer { accounts(filter: { accountTag: ${q(env.CF_ACCOUNT_ID)} }) {
+      ops: r2OperationsAdaptiveGroups(limit: 10000, filter: {
+        datetime_geq: ${q(start.toISOString())}, datetime_leq: ${q(now.toISOString())}, bucketName: ${q(env.R2_BUCKET_NAME)}
+      }) { sum { requests } dimensions { actionType } }
+      storage: r2StorageAdaptiveGroups(limit: 1, orderBy: [datetime_DESC], filter: {
+        datetime_geq: ${q(new Date(now.getTime() - 3 * 86_400_000).toISOString())}, datetime_leq: ${q(now.toISOString())}, bucketName: ${q(env.R2_BUCKET_NAME)}
+      }) { max { payloadSize metadataSize objectCount } }
+      workers: workersInvocationsAdaptive(limit: 100, filter: {
+        scriptName: ${q(env.WORKER_NAME)}, datetime_geq: ${q(start.toISOString())}, datetime_leq: ${q(now.toISOString())}
+      }) { sum { requests } dimensions { date } }
+      d1: d1AnalyticsAdaptiveGroups(limit: 100, filter: {
+        date_geq: ${q(day(start))}, date_leq: ${q(day(now))}, databaseId: ${q(env.D1_DATABASE_ID)}
+      }) { sum { rowsRead rowsWritten } dimensions { date } }
+    } }
+  }`;
+  const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.CF_API_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    data?: { viewer?: { accounts?: Record<string, unknown>[] } };
+    errors?: { message: string; path?: string[] }[] | null;
+  };
+  const acc = (body.data?.viewer?.accounts?.[0] ?? {}) as {
+    ops?: GqlDay<{ requests: number }>[];
+    storage?: { max: { payloadSize: number; metadataSize: number; objectCount: number } }[];
+    workers?: GqlDay<{ requests: number }>[];
+    d1?: GqlDay<{ rowsRead: number; rowsWritten: number }>[];
+  };
+  if (!res.ok && !body.data) fail(502, `A Cloudflare não respondeu (${res.status})`);
+
+  let classA = 0;
+  let classB = 0;
+  for (const g of acc.ops ?? []) {
+    const action = g.dimensions.actionType ?? "";
+    if (R2_CLASS_A.has(action)) classA += g.sum.requests;
+    else if (R2_CLASS_B.has(action)) classB += g.sum.requests;
+  }
+  const stored = acc.storage?.[0]?.max;
+  // Por dia: o Worker e o D1 têm limites diários.
+  const perDay = <T>(rows: GqlDay<T>[] | undefined, pick: (s: T) => number) => {
+    const days = new Map<string, number>();
+    for (const r of rows ?? []) days.set(r.dimensions.date ?? "", (days.get(r.dimensions.date ?? "") ?? 0) + pick(r.sum));
+    const values = [...days.values()];
+    return { month: values.reduce((a, b) => a + b, 0), today: days.get(day(now)) ?? 0, maxDay: Math.max(0, ...values) };
+  };
+
+  return c.json({
+    configured: true,
+    updatedAt: now.getTime(),
+    month: { start: start.getTime(), daysInMonth, elapsedDays },
+    r2: {
+      classA,
+      classB,
+      storedBytes: stored ? stored.payloadSize + stored.metadataSize : null,
+      objects: stored?.objectCount ?? null,
+    },
+    workers: perDay(acc.workers, (s) => s.requests),
+    d1Read: perDay(acc.d1, (s) => s.rowsRead),
+    d1Written: perDay(acc.d1, (s) => s.rowsWritten),
+    // O que o próprio app soma (músicas no catálogo), para comparar.
+    app: await usage(env),
+    errors: (body.errors ?? []).map((e) => `${(e.path ?? []).join(".")}: ${e.message}`),
+  });
+});
 
 // ---------------- Compartilhamento ----------------
 

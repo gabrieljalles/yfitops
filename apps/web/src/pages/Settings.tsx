@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   cacheUsage,
   clearCache,
+  freeSpace,
+  trimCache,
   clearOffline,
   defaultDownloadQuality,
   getQuality,
@@ -31,6 +33,7 @@ export function SettingsPage() {
   const [dlQuality, setDlQuality] = useState<DownloadQuality>(defaultDownloadQuality());
   const [local, setLocal] = useState(0);
   const [cached, setCached] = useState(0);
+  const [free, setFree] = useState<number | null>(null);
   const prefs = useStore(prefsStore);
   const [permission, setPermission] = useState(notifyPermission());
   // Escolha de qualidade só existe nas músicas de antes do catálogo (FLAC + versão leve).
@@ -39,6 +42,7 @@ export function SettingsPage() {
   useEffect(() => {
     offlineUsage().then(setLocal);
     cacheUsage().then(setCached);
+    freeSpace().then(setFree);
   }, []);
 
   return (
@@ -230,22 +234,35 @@ export function SettingsPage() {
         <h2>Músicas já ouvidas</h2>
         <p className="muted small">
           Cada música vem do servidor uma vez só: depois de ouvida, fica guardada aqui e tocar de novo não usa internet. Quando passa do limite,
-          saem as ouvidas há mais tempo.
+          saem as ouvidas há mais tempo. Mais espaço = menos downloads repetidos (1 GB ≈ 170 músicas).
         </p>
         <div className="setting-row">
           <span>Guardar até</span>
           <Segmented
             value={String(prefs.cacheMB)}
-            onChange={(v) => setPref("cacheMB", Number(v))}
+            onChange={(v) => {
+              setPref("cacheMB", Number(v));
+              // Diminuiu: libera o excesso agora.
+              void trimCache().then(() => cacheUsage().then(setCached));
+            }}
             options={[
-              ["512", "500 MB"],
               ["1024", "1 GB"],
               ["2048", "2 GB"],
               ["4096", "4 GB"],
+              ["8192", "8 GB"],
             ]}
           />
         </div>
-        <p className="muted small">{formatBytes(cached)} guardados agora</p>
+        <p className="muted small">
+          {formatBytes(cached)} guardados agora
+          {free !== null && ` · ${formatBytes(free)} livres para o app neste aparelho`}
+        </p>
+        {free !== null && prefs.cacheMB * 1024 * 1024 > free + cached && (
+          <p className="small error">
+            Este aparelho não tem espaço para {formatBytes(prefs.cacheMB * 1024 * 1024)}. O app guarda o que couber e as músicas continuam tocando
+            normalmente; só as que não couberem serão baixadas de novo.
+          </p>
+        )}
         <button
           className="link danger"
           onClick={() =>

@@ -1083,6 +1083,86 @@ select {
 .icon-btn.danger {
   color: var(--danger);
 }
+
+/* Consumo da Cloudflare: barra com a linha vermelha no limite grátis. */
+.consumption-head {
+  width: 100%;
+  flex-wrap: wrap;
+}
+.consumption-head h2 {
+  margin: 0;
+}
+.consumption-group {
+  margin: 12px 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.consumption .steps {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meter {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meter-head {
+  flex-wrap: wrap;
+  font-size: 0.92rem;
+}
+.meter-value {
+  font-variant-numeric: tabular-nums;
+}
+.meter-track {
+  position: relative;
+  height: 10px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  overflow: visible;
+}
+.meter-fill,
+.meter-projected {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 99px;
+}
+.meter-projected {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.meter-fill {
+  background: var(--accent);
+  min-width: 3px;
+}
+.meter.warn .meter-fill {
+  background: #d89a1a;
+}
+.meter.over .meter-fill {
+  background: var(--danger);
+}
+/* O ponto em que a Cloudflare começa a cobrar. */
+.meter-limit {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--danger);
+  border-radius: 1px;
+}
+.meter p {
+  margin: 0;
+}
+.danger-text {
+  color: var(--danger);
+}
 .auth-form.pending {
   text-align: center;
   display: flex;

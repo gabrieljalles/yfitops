@@ -6,7 +6,7 @@ import { Notice } from "./components/Notice";
 import { SyncButton } from "./components/SyncButton";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
-import { loadOfflineIndex } from "./lib/blobs";
+import { keepLocalData, loadOfflineIndex } from "./lib/blobs";
 import { reconcileMerges } from "./lib/catalog";
 import { jobsStore } from "./lib/importer";
 import { libraryStore, loadLocal, resetLibrary, sync } from "./lib/library";
@@ -52,6 +52,7 @@ export function App() {
     const syncAll = () => sync().then(() => reconcileMerges().catch(() => {}));
     void loadLocal().then(syncAll);
     void loadOfflineIndex();
+    void keepLocalData();
     // Economia de requisições: o que você muda vai na hora (saveItem); buscar o
     // que mudou em outro aparelho é a cada 5 min com o app aberto e na tela, ou
     // ao voltar para o app (se o último sync tiver mais de 1 min).

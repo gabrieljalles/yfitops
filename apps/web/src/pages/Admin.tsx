@@ -119,6 +119,8 @@ export default function AdminPage() {
         <p className="muted small">A faxina também roda sozinha todo dia de madrugada.</p>
       </section>
 
+      <Consumption />
+
       <section>
         <h2>Pessoas</h2>
         <ul className="plain admin-list">
@@ -234,5 +236,209 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
         </button>
       )}
     </section>
+  );
+}
+
+// ---------------- Consumo da Cloudflare ----------------
+
+interface PerDay {
+  month: number;
+  today: number;
+  maxDay: number;
+}
+
+interface ConsumptionData {
+  configured: boolean;
+  updatedAt?: number;
+  month?: { start: number; daysInMonth: number; elapsedDays: number };
+  r2?: { classA: number; classB: number; storedBytes: number | null; objects: number | null };
+  workers?: PerDay;
+  d1Read?: PerDay;
+  d1Written?: PerDay;
+  app?: { bytes: number; quota: number; count: number };
+  errors?: string[];
+}
+
+const GB = 1024 ** 3;
+const num = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} mi`
+    : n >= 1000
+      ? `${(n / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil`
+      : n.toLocaleString("pt-BR");
+const gb = (bytes: number) => `${(bytes / GB).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} GB`;
+const usd = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "USD" });
+
+/**
+ * Consumo do mês, com os números da própria Cloudflare. Só busca quando o
+ * administrador clica em "atualizar dados" (abrir o painel não gasta nada).
+ */
+function Consumption() {
+  const [data, setData] = useState<ConsumptionData | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () =>
+    attempt(async () => {
+      setBusy(true);
+      try {
+        setData(await api.json<ConsumptionData>("/admin/consumption", { method: "POST" }));
+      } finally {
+        setBusy(false);
+      }
+    });
+
+  const m = data?.month;
+  // Ritmo do mês até agora, esticado até o fim do mês.
+  const project = (v: number) => (m ? (v / m.elapsedDays) * m.daysInMonth : v);
+
+  return (
+    <section className="consumption">
+      <div className="row between consumption-head">
+        <h2>Consumo da Cloudflare</h2>
+        <button className="primary" onClick={() => void refresh()} disabled={busy}>
+          <Icon name="sync" size={16} /> {busy ? "buscando…" : "atualizar dados"}
+        </button>
+      </div>
+      {!data ? (
+        <p className="muted small">
+          Os números vêm da própria Cloudflare (os mesmos da cobrança) e só são buscados quando você clica em atualizar. A linha vermelha marca
+          onde a Cloudflare começaria a cobrar.
+        </p>
+      ) : !data.configured ? (
+        <div className="small">
+          <p>Falta a chave de leitura da Cloudflare. Para ligar:</p>
+          <ol className="steps">
+            <li>
+              No painel da Cloudflare: <strong>Meu perfil → Tokens de API → Criar token → Personalizado</strong>.
+            </li>
+            <li>
+              Permissão: <strong>Conta → Account Analytics → Ler</strong>. Nada mais.
+            </li>
+            <li>
+              No PC, na pasta <code>server</code>: <code>npx wrangler secret put CF_API_TOKEN</code> e cole o token.
+            </li>
+          </ol>
+        </div>
+      ) : (
+        <>
+          <p className="muted small">
+            Mês até agora ({Math.floor(m!.elapsedDays)} de {m!.daysInMonth} dias) · atualizado às{" "}
+            {new Date(data.updatedAt!).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}. A barra clara é a previsão para o mês
+            inteiro, no ritmo atual.
+          </p>
+
+          <h3 className="consumption-group">Armazenamento de músicas (R2) · o único que cobra</h3>
+          <Meter
+            label="Espaço guardado"
+            value={data.r2!.storedBytes ?? data.app!.bytes}
+            limit={10 * GB}
+            format={gb}
+            note={`${num(data.r2!.objects ?? data.app!.count)} arquivos. O app trava novos envios em ${gb(data.app!.quota)}.`}
+            price={(over) => usd((over / GB) * 0.015) + " por mês"}
+          />
+          <Meter
+            label="Gravações no mês (Classe A)"
+            value={data.r2!.classA}
+            projected={project(data.r2!.classA)}
+            limit={1_000_000}
+            format={num}
+            note="Enviar música nova: 2 por música (MP3 + capa)."
+            price={(over) => usd((over / 1_000_000) * 4.5)}
+          />
+          <Meter
+            label="Leituras no mês (Classe B)"
+            value={data.r2!.classB}
+            projected={project(data.r2!.classB)}
+            limit={10_000_000}
+            format={num}
+            note="Cada aparelho tocando uma música pela primeira vez, e a conferência de cada envio."
+            price={(over) => usd((over / 1_000_000) * 0.36)}
+          />
+
+          <h3 className="consumption-group">Servidor e banco · não cobram, só param até o dia seguinte</h3>
+          <Meter
+            label="Pedidos ao servidor no pior dia"
+            value={data.workers!.maxDay}
+            limit={100_000}
+            format={num}
+            note={`Hoje: ${num(data.workers!.today)} · no mês: ${num(data.workers!.month)}.`}
+          />
+          <Meter
+            label="Leituras do banco no pior dia"
+            value={data.d1Read!.maxDay}
+            limit={5_000_000}
+            format={num}
+            note={`Hoje: ${num(data.d1Read!.today)} linhas lidas.`}
+          />
+          <Meter
+            label="Gravações no banco no pior dia"
+            value={data.d1Written!.maxDay}
+            limit={100_000}
+            format={num}
+            note={`Hoje: ${num(data.d1Written!.today)} linhas gravadas.`}
+          />
+          {!!data.errors?.length && (
+            <p className="small error">Alguns números não vieram da Cloudflare: {data.errors.join(" · ")}</p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** Barra de consumo com a linha vermelha no limite grátis. */
+function Meter({
+  label,
+  value,
+  limit,
+  projected,
+  format,
+  note,
+  price,
+}: {
+  label: string;
+  value: number;
+  limit: number;
+  projected?: number;
+  format: (n: number) => string;
+  note?: string;
+  /** Quanto custaria o que passar do limite (só para o que cobra). */
+  price?: (over: number) => string;
+}) {
+  const top = Math.max(value, projected ?? 0, limit) * 1.15;
+  const at = (v: number) => `${Math.min(100, (v / top) * 100)}%`;
+  const pct = (value / limit) * 100;
+  const tone = value >= limit ? "over" : (projected ?? value) >= limit ? "warn" : pct >= 80 ? "warn" : "ok";
+  const overNow = Math.max(0, value - limit);
+  const overProjected = Math.max(0, (projected ?? value) - limit);
+  return (
+    <div className={`meter ${tone}`}>
+      <div className="row between meter-head">
+        <span>{label}</span>
+        <span className="meter-value">
+          {format(value)} <span className="muted">de {format(limit)} grátis</span>
+        </span>
+      </div>
+      <div
+        className="meter-track"
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={limit}
+        aria-valuenow={value}
+        aria-valuetext={`${format(value)} de ${format(limit)} grátis`}
+      >
+        {projected !== undefined && projected > value && <div className="meter-projected" style={{ width: at(projected) }} />}
+        <div className="meter-fill" style={{ width: at(value) }} />
+        <div className="meter-limit" style={{ left: at(limit) }} title={`Começa a cobrar a partir de ${format(limit)}`} />
+      </div>
+      <p className="small muted">
+        {pct < 0.1 && value > 0 ? "menos de 0,1%" : `${pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`} do grátis
+        {projected !== undefined && ` · previsão do mês: ${format(projected)}`}
+        {price && overNow > 0 && <strong className="danger-text"> · já custando {price(overNow)}</strong>}
+        {price && !overNow && overProjected > 0 && <strong className="danger-text"> · no ritmo atual custaria {price(overProjected)}</strong>}
+        {note && <> · {note}</>}
+      </p>
+    </div>
   );
 }

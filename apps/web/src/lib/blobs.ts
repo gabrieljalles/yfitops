@@ -87,47 +87,95 @@ async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
   let sealed: Uint8Array;
   if (hit) {
     sealed = new Uint8Array(await hit.data.arrayBuffer());
-    if (!keep) await d.put("cache", { ...hit, at: Date.now() }); // tocou de novo: fica mais tempo
+    // Tocou de novo: fica mais tempo (só a anotação muda; o arquivo não é regravado).
+    if (!keep) void d.put("cacheMeta", { key, size: hit.size, at: Date.now() }).catch(() => {});
   } else {
     sealed = await api.bytes(pathOf(ref));
   }
   if (keep) {
     await d.put("files", { key, data: new Blob([sealed]), size: sealed.length, at: Date.now() });
-    if (hit) await d.delete("cache", key);
+    if (hit) await forget(key);
     offlineStore.set((s) => new Set(s).add(key));
   } else if (!hit) {
-    await d.put("cache", { key, data: new Blob([sealed]), size: sealed.length, at: Date.now() });
-    void trimCache();
+    await remember(key, sealed);
   }
   return sealed;
 }
 
-/** Guarda no cache um arquivo que este aparelho já tem (ex.: acabou de enviar): tocar não baixa de volta. */
-export async function rememberLocal(ref: BlobRef, data: Uint8Array) {
-  await (await db()).put("cache", { key: fileKey(ref), data: new Blob([data]), size: data.length, at: Date.now() });
+/**
+ * Guarda no cache. Se o aparelho estiver sem espaço, a música toca mesmo assim
+ * (só não fica guardada): o cache nunca impede de ouvir.
+ */
+async function remember(key: string, data: Uint8Array) {
+  try {
+    const d = await db();
+    const tx = d.transaction(["cache", "cacheMeta"], "readwrite");
+    await Promise.all([
+      tx.objectStore("cache").put({ key, data: new Blob([data]), size: data.length, at: Date.now() }),
+      tx.objectStore("cacheMeta").put({ key, size: data.length, at: Date.now() }),
+      tx.done,
+    ]);
+  } catch (e) {
+    console.warn("Sem espaço para guardar a música no aparelho; tocando sem guardar", e);
+    return;
+  }
   void trimCache();
 }
 
-/** Tira do cache as músicas ouvidas há mais tempo até caber no limite (Ajustes). */
-async function trimCache() {
-  const limit = prefsStore.get().cacheMB * 1024 * 1024;
+async function forget(key: string) {
   const d = await db();
-  const all = (await d.getAll("cache")).sort((a, b) => a.at - b.at);
+  const tx = d.transaction(["cache", "cacheMeta"], "readwrite");
+  await Promise.all([tx.objectStore("cache").delete(key), tx.objectStore("cacheMeta").delete(key), tx.done]);
+}
+
+/** Guarda no cache um arquivo que este aparelho já tem (ex.: acabou de enviar): tocar não baixa de volta. */
+export async function rememberLocal(ref: BlobRef, data: Uint8Array) {
+  await remember(fileKey(ref), data);
+}
+
+/** Tira do cache as músicas ouvidas há mais tempo até caber no limite (Ajustes). */
+export async function trimCache() {
+  const limit = prefsStore.get().cacheMB * 1024 * 1024;
+  // Só a lista de tamanhos: nenhum arquivo é aberto para decidir o que sai.
+  const all = (await (await db()).getAll("cacheMeta")).sort((a, b) => a.at - b.at);
   let total = all.reduce((n, f) => n + f.size, 0);
   for (const f of all) {
     if (total <= limit) break;
-    await d.delete("cache", f.key);
+    await forget(f.key);
     total -= f.size;
   }
 }
 
 /** Espaço das músicas já ouvidas guardadas no aparelho. */
 export async function cacheUsage(): Promise<number> {
-  return (await (await db()).getAll("cache")).reduce((n, f) => n + f.size, 0);
+  return (await (await db()).getAll("cacheMeta")).reduce((n, f) => n + f.size, 0);
 }
 
 export async function clearCache() {
-  await (await db()).clear("cache");
+  const d = await db();
+  await Promise.all([d.clear("cache"), d.clear("cacheMeta")]);
+}
+
+/**
+ * Pede ao navegador para não apagar os dados do app por falta de uso (o iPhone
+ * apaga sites esquecidos por semanas). No Android costuma ser aceito na hora.
+ */
+export async function keepLocalData() {
+  try {
+    if (navigator.storage?.persisted && !(await navigator.storage.persisted())) await navigator.storage.persist?.();
+  } catch {
+    /* navegador sem suporte: segue normal */
+  }
+}
+
+/** Espaço que o navegador ainda deixa o app usar neste aparelho (null = não informa). */
+export async function freeSpace(): Promise<number | null> {
+  try {
+    const e = await navigator.storage?.estimate?.();
+    return e?.quota != null && e.usage != null ? Math.max(0, e.quota - e.usage) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Já está no aparelho (baixada ou no cache)? Aí tocar não custa nada. */

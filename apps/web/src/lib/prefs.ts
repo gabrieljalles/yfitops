@@ -32,9 +32,13 @@ const DEFAULTS: Prefs = {
 };
 const KEY = "prefs";
 
+/** O cache guarda no mínimo 1 GB: menos que isso, a mesma música seria pedida ao servidor toda hora. */
+export const MIN_CACHE_MB = 1024;
+
 function load(): Prefs {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    const p: Prefs = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    return { ...p, cacheMB: Math.max(MIN_CACHE_MB, Number(p.cacheMB) || MIN_CACHE_MB) };
   } catch {
     return DEFAULTS;
   }

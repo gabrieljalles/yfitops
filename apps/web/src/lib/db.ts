@@ -19,13 +19,15 @@ interface Schema extends DBSchema {
    * não pede nada ao servidor. `at` = última vez que tocou (sai a mais antiga).
    */
   cache: { key: string; value: { key: string; data: Blob; size: number; at: number } };
+  /** Tamanho e último uso de cada música do cache, sem abrir os arquivos (limpeza rápida). */
+  cacheMeta: { key: string; value: { key: string; size: number; at: number } };
 }
 
 let dbp: Promise<IDBPDatabase<Schema>> | null = null;
 
 export function db() {
-  dbp ??= openDB<Schema>("yfitops", 2, {
-    upgrade(d, from) {
+  dbp ??= openDB<Schema>("yfitops", 3, {
+    upgrade(d, from, _to, tx) {
       if (from < 1) {
         d.createObjectStore("kv");
         d.createObjectStore("items", { keyPath: "id" });
@@ -33,6 +35,11 @@ export function db() {
         d.createObjectStore("files", { keyPath: "key" });
       }
       if (from < 2) d.createObjectStore("cache", { keyPath: "key" });
+      if (from < 3) {
+        d.createObjectStore("cacheMeta", { keyPath: "key" });
+        // O cache da versão anterior não tinha a lista de tamanhos: recomeça vazio.
+        if (from === 2) void tx.objectStore("cache").clear();
+      }
     },
   });
   return dbp;
@@ -49,5 +56,5 @@ export async function kvSet(key: string, value: unknown) {
 /** Apaga tudo deste aparelho (logout). */
 export async function wipe() {
   const d = await db();
-  await Promise.all((["kv", "items", "outbox", "files", "cache"] as const).map((s) => d.clear(s)));
+  await Promise.all((["kv", "items", "outbox", "files", "cache", "cacheMeta"] as const).map((s) => d.clear(s)));
 }
