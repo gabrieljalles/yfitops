@@ -4,7 +4,8 @@ import { formatBytes } from "../lib/tracks";
 import { refreshUsage, usageStore, usageTone } from "../lib/usage";
 
 /**
- * Espaço da nuvem. `onlyWhenFull`: só aparece quando passa de 80% (aviso na
+ * Espaço da nuvem, que é um só para todas as contas (as músicas são
+ * compartilhadas). `onlyWhenFull`: só aparece quando passa de 80% (aviso na
  * tela de envio); sem ele, sempre aparece (Ajustes).
  */
 export function StorageBar({ onlyWhenFull = false }: { onlyWhenFull?: boolean }) {
@@ -21,7 +22,7 @@ export function StorageBar({ onlyWhenFull = false }: { onlyWhenFull?: boolean })
       <div
         className="progress"
         role="meter"
-        aria-label="Espaço usado na nuvem"
+        aria-label="Espaço usado na nuvem compartilhada"
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct)}
@@ -34,12 +35,12 @@ export function StorageBar({ onlyWhenFull = false }: { onlyWhenFull?: boolean })
         ) : tone === "warn" ? (
           <strong>Nuvem enchendo: </strong>
         ) : null}
-        {formatBytes(usage.bytes)} de {formatBytes(usage.quota)} ({Math.round(pct)}%) · {formatBytes(free)} livres ·{" "}
-        {usage.count} arquivos
+        Nuvem de todos: {formatBytes(usage.bytes)} de {formatBytes(usage.quota)} ({Math.round(pct)}%) · {formatBytes(free)}{" "}
+        livres · {usage.count} {usage.count === 1 ? "música" : "músicas"}
       </p>
       {tone !== "ok" && (
         <p className="small muted">
-          Para liberar espaço, exclua músicas que não ouve mais. Músicas sem perda (FLAC) ocupam bem mais que as leves.
+          Quando encher, ninguém consegue trazer músicas novas. Músicas repetidas não ocupam espaço extra.
         </p>
       )}
     </div>

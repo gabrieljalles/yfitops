@@ -2,6 +2,7 @@ import { artistFromChannel, splitArtistTitle } from "./artist";
 import { ACCEPTED_EXT, enqueue, trackIdBySource } from "./importer";
 import { createPlaylist, libraryStore, saveItem } from "./library";
 import { resolverFetch } from "./resolverConn";
+import { addSong, findInCatalog } from "./catalog";
 import { mergeTags } from "./search";
 
 // ---------------------------------------------------------------------------
@@ -244,9 +245,34 @@ export interface PlaylistResult {
   playlist?: { id: string; name: string; source: string; tracks: ResolvedTrack[] };
 }
 
+/** Faixas ligadas a uma música do catálogo nesta importação (id na biblioteca). */
+const linkedIds = new WeakMap<ResolvedTrack, string>();
+
 /** Id da faixa no app para uma faixa da origem (depois de importada ou se já existia). */
 const appTrackId = (t: ResolvedTrack) =>
-  (t.videoId ? trackIdBySource(`youtube:${t.videoId}`) : undefined) ?? trackIdByCatalog(catalogKey(t));
+  linkedIds.get(t) ??
+  (t.videoId ? trackIdBySource(`youtube:${t.videoId}`) : undefined) ??
+  trackIdByCatalog(catalogKey(t));
+
+/**
+ * Procura a faixa no catálogo compartilhado antes de ir ao YouTube: se alguém já
+ * importou (o mesmo vídeo, a mesma faixa do Spotify/Deezer, ou a mesma música),
+ * não baixa nada. Sem resposta do servidor, segue para o YouTube.
+ */
+async function fromSharedCatalog(t: ResolvedTrack, key: string | undefined) {
+  const split = t.query ? null : splitArtistTitle(t.title);
+  const sources = [t.videoId && `youtube:${t.videoId}`, key].filter((x): x is string => !!x);
+  try {
+    return await findInCatalog({
+      artist: split?.artist || (t.query ? t.artist : artistFromChannel(t.artist) || t.artist),
+      title: split?.title || t.title,
+      duration: t.duration,
+      sources,
+    });
+  } catch {
+    return null;
+  }
+}
 
 /** Origem da faixa no catálogo ("spotify:<id>", "deezer:<id>"); undefined para vídeos do YouTube. */
 const catalogKey = (t: ResolvedTrack) =>
@@ -449,6 +475,21 @@ export async function importTracks(
       continue;
     }
 
+    // Já está no catálogo compartilhado: só liga na biblioteca, sem YouTube.
+    // (Vídeo que já está na biblioteca segue o caminho de "já existe" mais abaixo.)
+    const inLibrary = t.videoId && trackIdBySource(`youtube:${t.videoId}`);
+    const shared = inLibrary ? null : await fromSharedCatalog(t, key);
+    if (shared) {
+      const { id, existed } = await addSong(shared, {
+        tags,
+        source: t.videoId ? `youtube:${t.videoId}` : undefined,
+        alsoFrom: key ? [key] : undefined,
+      });
+      linkedIds.set(t, id);
+      (existed ? result.existing : result.imported).push(t);
+      continue;
+    }
+
     // Faixa do Spotify/Deezer: ainda não tem videoId. Procura "artista - música" no
     // YouTube e usa o melhor resultado (é o passo que o spotdl também faz).
     if (!t.videoId && t.query) {
@@ -524,6 +565,7 @@ export async function importTracks(
       pending.push(
         job.then((j) => {
           inFlight.delete(t.videoId);
+          if (j.result) linkedIds.set(t, j.result);
           if (j.status === "pronto") result.imported.push(t);
           else if (j.status === "já existe") result.existing.push(t);
           else

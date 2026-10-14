@@ -1032,6 +1032,17 @@ select {
   width: 100%;
   max-width: 420px;
 }
+
+/* Busca: músicas do catálogo que ainda não estão na biblioteca. */
+.catalog-results {
+  margin-top: 24px;
+}
+.catalog-results h4 {
+  margin-bottom: 2px;
+}
+.catalog-results > p {
+  margin: 0 0 8px;
+}
 .range-value {
   font-variant-numeric: tabular-nums;
   color: var(--accent);

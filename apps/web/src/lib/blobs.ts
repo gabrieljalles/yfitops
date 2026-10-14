@@ -1,5 +1,5 @@
 import { decryptFile, encryptContent, type BlobRef, type Track, type Variant } from "@yfitops/core";
-import { api, ApiError } from "./api";
+import { api, ApiError, authedUrl } from "./api";
 import { db } from "./db";
 import { createStore } from "./observable";
 import { getKeys, getSession } from "./session";
@@ -8,6 +8,8 @@ const SINGLE_LIMIT = 80 * 1024 * 1024;
 const PART_SIZE = 50 * 1024 * 1024;
 
 // ---------------- Upload ----------------
+// (Arquivos criptografados, só do dono: capas trocadas à mão. Músicas novas vão
+// para o catálogo compartilhado, em catalog.ts.)
 
 /** Criptografa e envia um arquivo. Se o mesmo conteúdo já existe na sua conta, não reenvia. */
 export async function uploadBlob(
@@ -40,6 +42,8 @@ export async function uploadBlob(
 }
 
 export async function deleteBlob(ref: BlobRef) {
+  // Música do catálogo é de todos: sair da biblioteca não apaga da nuvem.
+  if (ref.shared) return;
   if (ref.owner && ref.owner !== getSession().userId) return;
   try {
     await api.raw(`/blobs/${ref.id}`, { method: "DELETE" });
@@ -51,8 +55,14 @@ export async function deleteBlob(ref: BlobRef) {
 
 // ---------------- Download e cache offline ----------------
 
-const fileKey = (ref: BlobRef) => `${ref.owner ?? getSession().userId}/${ref.id}`;
-const ownerQuery = (ref: BlobRef) => (ref.owner && ref.owner !== getSession().userId ? `?owner=${ref.owner}` : "");
+const fileKey = (ref: BlobRef) => (ref.shared ? `songs/${ref.id}/${ref.shared}` : `${ref.owner ?? getSession().userId}/${ref.id}`);
+const ownerQuery = (ref: BlobRef) => (!ref.shared && ref.owner && ref.owner !== getSession().userId ? `?owner=${ref.owner}` : "");
+/** Caminho na API: catálogo (aberto) ou arquivo criptografado. */
+const pathOf = (ref: BlobRef) => (ref.shared ? `/songs/${ref.id}/${ref.shared}` : `/blobs/${ref.id}${ownerQuery(ref)}`);
+
+/** Música do catálogo que não está no aparelho: o player toca direto do servidor, enquanto baixa. */
+export const streamUrl = (ref: BlobRef, offline: Set<string>): string | null =>
+  ref.shared && !offline.has(fileKey(ref)) ? authedUrl(pathOf(ref)) : null;
 
 /** Chaves dos arquivos guardados offline (para a UI mostrar o que está baixado). */
 export const offlineStore = createStore<Set<string>>(new Set());
@@ -67,7 +77,7 @@ async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
   const d = await db();
   const cached = await d.get("files", fileKey(ref));
   if (cached) return new Uint8Array(await cached.data.arrayBuffer());
-  const sealed = await api.bytes(`/blobs/${ref.id}${ownerQuery(ref)}`);
+  const sealed = await api.bytes(pathOf(ref));
   if (keep) {
     await d.put("files", { key: fileKey(ref), data: new Blob([sealed]), size: sealed.length, at: Date.now() });
     offlineStore.set((s) => new Set(s).add(fileKey(ref)));
@@ -76,7 +86,8 @@ async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
 }
 
 export async function readBlob(ref: BlobRef, keep = false): Promise<Uint8Array> {
-  return decryptFile(ref, await fetchSealed(ref, keep));
+  const data = await fetchSealed(ref, keep);
+  return ref.shared ? data : decryptFile(ref, data);
 }
 
 export async function saveOffline(ref: BlobRef) {
@@ -146,7 +157,7 @@ function playableOrder(t: Track, order: Variant[]): BlobRef[] {
  * as já baixadas antes das outras, e por fim as "não tocáveis" (o canPlayType às vezes erra).
  */
 export function variantCandidates(t: Track, offline: Set<string>, forceLight = wantsLight()): BlobRef[] {
-  const order: Variant[] = forceLight ? ["opus", "orig", "flac"] : ["flac", "orig", "opus"];
+  const order: Variant[] = forceLight ? ["mp3", "opus", "orig", "flac"] : ["mp3", "flac", "orig", "opus"];
   const refs = order.map((v) => t.variants[v]).filter(Boolean) as BlobRef[];
   const rank = (r: BlobRef) => (canPlay(r.mime) ? 0 : 2) + (isOffline(offline, r) ? 0 : 1);
   return refs.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map(({ r }) => r);
@@ -170,7 +181,7 @@ export function setDefaultDownloadQuality(q: DownloadQuality) {
 
 /** Variante a baixar para offline na qualidade pedida. */
 export function offlineVariant(t: Track, q: DownloadQuality = defaultDownloadQuality()): BlobRef {
-  return playableOrder(t, q === "max" ? ["flac", "orig", "opus"] : ["opus", "orig", "flac"])[0];
+  return playableOrder(t, q === "max" ? ["mp3", "flac", "orig", "opus"] : ["mp3", "opus", "orig", "flac"])[0];
 }
 
 /** Se a música tem versões diferentes para "normal" e "máxima". */

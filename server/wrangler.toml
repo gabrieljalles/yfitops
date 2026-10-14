@@ -11,7 +11,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "yfitops"
-database_id = "COLE_AQUI_O_ID_DO_D1"
+database_id = "b051af3c-4b5d-4242-aa03-1679e2d15137"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
@@ -22,8 +22,13 @@ bucket_name = "yfitops-music"
 # APP_URL: opcional. Sem ele, o link de recuperação usa o endereço do próprio Worker.
 # Remetente do e-mail de recuperação (domínio verificado no Resend).
 MAIL_FROM = "Yfitops <onboarding@resend.dev>"
-# Limite de armazenamento por conta, em GB.
-QUOTA_GB = "50"
+# Limite TOTAL da nuvem, somando todas as contas, em GB (o R2 é grátis até 10 GB).
+QUOTA_GB = "9.5"
+
+# Faxina do catálogo: junta músicas duplicadas e limpa envios abandonados.
+# Todo dia às 6h UTC (3h em Brasília).
+[triggers]
+crons = ["0 6 * * *"]
 
 # Segredos (wrangler secret put …  /  .dev.vars em desenvolvimento):
 # ESCROW_PRIVATE_KEY, ESCROW_PUBLIC_KEY  → npm run gen-escrow -w server

@@ -5,6 +5,9 @@ export function setToken(t: string | null) {
   token = t;
 }
 
+/** Endereço com a sessão na URL, para o <audio> tocar direto do servidor (ele não manda cabeçalhos). */
+export const authedUrl = (path: string) => `/api${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(token ?? "")}`;
+
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }

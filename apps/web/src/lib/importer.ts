@@ -1,28 +1,13 @@
 import { parseBuffer, type IAudioMetadata } from "music-metadata";
-import {
-  contentId,
-  describeSource,
-  extractTarget,
-  planImport,
-  type BlobRef,
-  type Track,
-} from "@yfitops/core";
+import { describeSource } from "@yfitops/core";
 import { lookupArtist, splitArtistTitle, UNKNOWN_ARTIST } from "./artist";
+import { addSong, fileHash, findInCatalog, publishSong } from "./catalog";
 import { notify } from "./notify";
 import { refreshUsage } from "./usage";
-import { mergeTags } from "./search";
-import { uploadBlob } from "./blobs";
-import {
-  extractAudio,
-  lightOnly,
-  transcodeDsd,
-  transcodeLossless,
-  type Stage,
-} from "./ffmpeg";
+import { MP3_KBPS, toMp3, type Stage } from "./ffmpeg";
 import { formatBytes } from "./tracks";
-import { libraryStore, saveItem } from "./library";
+import { libraryStore } from "./library";
 import { createStore } from "./observable";
-import { getKeys } from "./session";
 
 export type JobStatus =
   | "na fila"
@@ -245,130 +230,30 @@ function probeDuration(data: Uint8Array, mime: string): Promise<number> {
   });
 }
 
-type Upload = { key: "flac" | "opus" | "orig"; data: Uint8Array; mime: string };
+/** MP3 até este bitrate entra como está (só sem as tags): reconverter só piora. */
+const KEEP_MP3_UP_TO = 200_000;
+
+/** "já existe": a faixa já estava na biblioteca, com as tags e origens novas aplicadas. */
+async function linkExisting(jobId: number, song: Parameters<typeof addSong>[0], extras: ImportExtras, sourceInfo?: string) {
+  const { id, existed } = await addSong(song, {
+    tags: extras.tags,
+    source: extras.source,
+    alsoFrom: extras.alsoFrom,
+    sourceInfo,
+  });
+  update(jobId, existed
+    ? { status: "já existe", detail: "Essa música já está na biblioteca", result: id, progress: 1 }
+    : { status: "pronto", detail: "já estava no yfitops: nada foi enviado", result: id, progress: 1 });
+}
 
 async function importFile(jobId: number, file: File, extras: ImportExtras) {
   update(jobId, { status: "lendo" });
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const trackId = await contentId(getKeys(), bytes);
-  const existing = libraryStore.get().tracks[trackId];
-  if (existing) {
-    // Faixa importada antes de guardarmos a origem: grava agora, para da próxima
-    // vez nem baixar. E recebe as tags escolhidas na importação.
-    const source = extras.source && !existing.source ? extras.source : undefined;
-    const tags = mergeTags(existing.tags, extras.tags);
-    const newOrigins = (extras.alsoFrom ?? []).filter((k) => !existing.alsoFrom?.includes(k));
-    const alsoFrom = newOrigins.length ? [...(existing.alsoFrom ?? []), ...newOrigins] : existing.alsoFrom;
-    if (source || tags !== existing.tags || alsoFrom !== existing.alsoFrom) {
-      await saveItem("track", trackId, { ...existing, ...(source && { source }), tags, ...(alsoFrom && { alsoFrom }) });
-    }
-    update(jobId, {
-      status: "já existe",
-      detail: "Essa música já está na biblioteca",
-      result: trackId,
-    });
-    return;
-  }
-
-  const meta = await readMeta(bytes, mimeOf(file.name, file.type));
-  let f = meta.format;
-  let src = bytes;
-  let srcName = file.name;
-  let srcMime = mimeOf(file.name, file.type);
-  let plan = planImport(file.name, {
-    codec: f.codec,
-    container: f.container,
-    lossless: f.lossless,
-    hasVideo: file.type.startsWith("video/"),
-  });
-  const onStage = (stage: Stage, p: number) =>
-    update(jobId, { detail: stage, progress: p });
-  const notes: string[] = [];
-
-  // Vídeo: separa o áudio sem reconverter e decide de novo com base nele.
-  if (plan === "extract") {
-    update(jobId, { status: "convertendo" });
-    const target = extractTarget(f.codec);
-    src = await extractAudio(bytes, extOf(file.name), target.ext, onStage);
-    srcName = `audio.${target.ext}`;
-    srcMime = target.mime;
-    f = (await readMeta(src, target.mime)).format;
-    plan = planImport(srcName, {
-      codec: f.codec,
-      container: f.container,
-      lossless: f.lossless,
-    });
-    if (plan === "extract") plan = "keep+light";
-    notes.push(
-      `áudio do vídeo (${formatBytes(file.size)} → ${formatBytes(src.length)})`,
-    );
-  }
-
-  const toUpload: Upload[] = [];
-  const original: Upload = { key: "orig", data: src, mime: srcMime };
-  if (plan === "lossless") {
-    update(jobId, { status: "convertendo" });
-    const res = await transcodeLossless(src, extOf(srcName), onStage);
-    toUpload.push(
-      res.flac ? { key: "flac", data: res.flac, mime: "audio/flac" } : original,
-    );
-    toUpload.push({ key: "opus", data: res.light.data, mime: res.light.mime });
-    notes.push(
-      res.flac
-        ? `FLAC ${pct(res.flac.length, src.length)}`
-        : "original mantido (verificação não bateu)",
-    );
-  } else if (plan === "dsd") {
-    update(jobId, { status: "convertendo" });
-    const res = await transcodeDsd(src, extOf(srcName), onStage);
-    toUpload.push({ key: "flac", data: res.flac, mime: "audio/flac" });
-    toUpload.push({ key: "opus", data: res.light.data, mime: res.light.mime });
-    notes.push(
-      `DSD → FLAC 24-bit/176,4 kHz, ${pct(res.flac.length, src.length)}`,
-    );
-  } else if (plan === "keep+light") {
-    // Com perda e incomum: o original fica intacto (reconverter pioraria) e ganha uma versão tocável.
-    update(jobId, { status: "convertendo" });
-    const light = await lightOnly(src, extOf(srcName), onStage);
-    toUpload.push(original, {
-      key: "opus",
-      data: light.data,
-      mime: light.mime,
-    });
-    notes.push("original guardado + versão tocável");
-  } else {
-    // Comum e leve: fica exatamente como está.
-    toUpload.push(original);
-    notes.push("mantido como está");
-  }
-
-  update(jobId, { status: "enviando", progress: 0 });
-  const variants: Track["variants"] = {};
-  const total = toUpload.reduce((n, u) => n + u.data.length, 0);
-  let done = 0;
-  for (const u of toUpload) {
-    variants[u.key] = await uploadBlob(u.data, u.mime, (p) =>
-      update(jobId, {
-        detail: u.key.toUpperCase(),
-        progress: (done + p * u.data.length) / total,
-      }),
-    );
-    done += u.data.length;
-  }
-
-  let cover: BlobRef | undefined;
-  const pic = meta.common.picture?.[0];
-  const image = pic ? new Blob([pic.data], { type: pic.format }) : extras.cover;
-  if (image) {
-    try {
-      cover = await uploadBlob(await makeCover(image), "image/webp");
-    } catch {
-      /* capa ilegível: usa o vinil */
-    }
-  }
-
-  const playable = toUpload.find((u) => u.key === "opus") ?? toUpload[0];
+  const mime = mimeOf(file.name, file.type);
+  const [meta, hash] = await Promise.all([readMeta(bytes, mime), fileHash(bytes)]);
+  const f = meta.format;
   const c = meta.common;
+
   // Sem tags: o nome do arquivo costuma ser "Artista - Título".
   const fromName = c.title || extras.title ? null : splitArtistTitle(titleFromName(file.name));
   const title = c.title || extras.title || fromName?.title || titleFromName(file.name);
@@ -377,36 +262,54 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
     update(jobId, { detail: "procurando o artista..." });
     artist = (await lookupArtist(title)) || UNKNOWN_ARTIST;
   }
-  const track: Track = {
-    title,
-    artist,
-    album: c.album || extras.album || "",
-    genre: c.genre?.[0] || "",
-    year: c.year,
-    tags: mergeTags([], extras.tags),
-    ...(extras.alsoFrom?.length && { alsoFrom: extras.alsoFrom }),
-    duration:
-      f.duration ||
-      meta.format.duration ||
-      (await probeDuration(playable.data, playable.mime)),
-    sourceInfo:
-      describeSource(meta.format.codec ? meta.format : f) ||
-      extOf(file.name).toUpperCase(),
-    variants,
+  const duration = f.duration || (await probeDuration(bytes, mime));
+  const sources = [extras.source, ...(extras.alsoFrom ?? [])].filter((x): x is string => !!x);
+  const sourceInfo = describeSource(f) || extOf(file.name).toUpperCase();
+
+  // Alguém (talvez você) já enviou essa música: só liga na biblioteca.
+  const query = { artist, title, duration, hash, sources };
+  const known = await findInCatalog(query);
+  if (known) return linkExisting(jobId, known, extras, sourceInfo);
+
+  update(jobId, { status: "convertendo" });
+  const onStage = (stage: Stage, p: number) => update(jobId, { detail: stage, progress: p });
+  const lightMp3 = /layer 3/i.test(f.codec ?? "") && !!f.bitrate && f.bitrate <= KEEP_MP3_UP_TO;
+  const audio = await toMp3(bytes, extOf(file.name), onStage, lightMp3);
+  const note = lightMp3
+    ? "MP3 mantido como está"
+    : `${sourceInfo} → MP3 ${MP3_KBPS} kbps (${formatBytes(file.size)} → ${formatBytes(audio.length)})`;
+
+  let cover: Uint8Array | undefined;
+  const pic = c.picture?.[0];
+  const image = pic ? new Blob([pic.data], { type: pic.format }) : extras.cover;
+  if (image) {
+    try {
+      cover = await makeCover(image);
+    } catch {
+      /* capa ilegível: usa o vinil */
+    }
+  }
+
+  update(jobId, { status: "enviando", detail: "", progress: 0 });
+  const { song, created } = await publishSong(
+    audio,
     cover,
-    ...(extras.source && { source: extras.source }),
-    addedAt: Date.now(),
-  };
-  await saveItem("track", trackId, track);
-  update(jobId, {
-    status: "pronto",
-    progress: 1,
-    detail: notes.join(" · "),
-    result: trackId,
+    { ...query, duration: duration || (await probeDuration(audio, "audio/mpeg")), album: c.album || extras.album || "" },
+    (p) => update(jobId, { progress: p }),
+  );
+  // Outra pessoa enviou a mesma enquanto este aparelho convertia.
+  if (!created) return linkExisting(jobId, song, extras, sourceInfo);
+
+  const { id } = await addSong(song, {
+    tags: extras.tags,
+    source: extras.source,
+    alsoFrom: extras.alsoFrom,
+    genre: c.genre?.[0],
+    year: c.year,
+    sourceInfo,
   });
+  update(jobId, { status: "pronto", progress: 1, detail: note, result: id });
 }
-const pct = (a: number, b: number) =>
-  `${Math.round((a / b) * 100)}% do tamanho`;
 
 /** Textura de capa de disco gasta (PNG branco com transparência), aplicada por cima de toda capa. */
 const COVER_TEXTURE = "/textura_vinil_branca.png";

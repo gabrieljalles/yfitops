@@ -143,15 +143,13 @@ try {
   step("baixar grupo para offline");
   await page.goto(URL + "#/");
   await page.locator(".grid-item", { hasText: "Estudo" }).click();
+  // Músicas do catálogo têm uma versão só (MP3): o menu não pergunta a qualidade.
   await page.getByRole("button", { name: /baixar/ }).click();
-  await page.getByRole("menuitem", { name: /Normal/ }).waitFor();
-  await shot("10a-menu-qualidade");
-  await page.getByRole("menuitem", { name: /Normal/ }).click();
-  await page.getByRole("button", { name: /baixado · normal/ }).waitFor({ timeout: 30000 });
-  await page.getByRole("button", { name: /baixado · normal/ }).click();
-  await page.getByRole("menuitem", { name: /Máxima/ }).click();
-  await page.getByRole("button", { name: /baixado · máxima/ }).waitFor({ timeout: 30000 });
-  console.log("   download normal → máxima ✓");
+  await page.getByRole("menuitem", { name: /Baixar/ }).waitFor();
+  await shot("10a-menu-baixar");
+  await page.getByRole("menuitem", { name: /Baixar/ }).click();
+  await page.getByRole("button", { name: /^\s*baixado$/ }).waitFor({ timeout: 30000 });
+  console.log("   download offline ✓");
   await shot("10-grupo");
 
   step("celular");
@@ -200,6 +198,18 @@ try {
   await p3.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
   console.log("   amigo tocando a música compartilhada ✓");
   await p3.screenshot({ path: join(OUT, "13-compartilhado.png") });
+
+  step("catálogo: o amigo acha a música na busca e adiciona sem enviar nada");
+  await p3.goto(URL + "#/buscar");
+  await p3.getByPlaceholder(/Música, artista/).fill("teste acorde");
+  const fromCatalog = p3.locator(".catalog-results li", { hasText: "Teste Acorde" });
+  await fromCatalog.waitFor({ timeout: 15000 });
+  await p3.screenshot({ path: join(OUT, "14-busca-catalogo.png") });
+  await fromCatalog.getByRole("button", { name: "Adicionar à biblioteca" }).click();
+  await p3.getByText("Adicionada à biblioteca").waitFor();
+  await p3.goto(URL + "#/biblioteca");
+  await p3.getByText("Teste Acorde").first().waitFor();
+  console.log("   música do catálogo na biblioteca do amigo ✓");
 } catch (e) {
   console.log("FALHOU:", e.message.split("\n")[0]);
   process.exitCode = 1;

@@ -4,13 +4,19 @@ import {
   eciesOpen,
   equalBytes,
   fromB64,
+  MATCH_TOLERANCE,
+  matchKey,
+  plain,
   randomBytes,
   randomId,
+  searchText,
   sha256,
   toB64,
   type ItemKind,
   type ShareInfo,
   type SignupRequest,
+  type SongInfo,
+  type SongQuery,
   type SyncItem,
   type SyncPushItem,
 } from "@yfitops/core";
@@ -20,6 +26,7 @@ interface Env {
   BUCKET: R2Bucket;
   APP_URL?: string;
   MAIL_FROM: string;
+  /** Limite TOTAL da nuvem (todas as contas juntas), em GB. */
   QUOTA_GB: string;
   ESCROW_PRIVATE_KEY: string;
   ESCROW_PUBLIC_KEY: string;
@@ -344,16 +351,22 @@ app.post("/sync", async (c) => {
 
 const r2Key = (owner: string, id: string) => `${owner}/${id}`;
 
-async function usage(c: Ctx, owner: string) {
-  const row = await c.env.DB.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM blobs WHERE owner = ?")
-    .bind(owner)
-    .first<{ count: number; bytes: number }>();
-  return { count: row?.count ?? 0, bytes: row?.bytes ?? 0, quota: Number(c.env.QUOTA_GB) * 1024 ** 3 };
+/**
+ * Espaço usado na nuvem inteira (o limite é um só para todos): músicas do
+ * catálogo + arquivos criptografados de antes dele. `count` = músicas no catálogo.
+ */
+async function usage(env: Env) {
+  const row = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM songs WHERE status != 'merged') AS count,
+            (SELECT COALESCE(SUM(size + cover_size), 0) FROM songs WHERE status != 'merged')
+              + (SELECT COALESCE(SUM(size), 0) FROM blobs) AS bytes`,
+  ).first<{ count: number; bytes: number }>();
+  return { count: row?.count ?? 0, bytes: row?.bytes ?? 0, quota: Math.floor(Number(env.QUOTA_GB) * 1024 ** 3) };
 }
 
 async function checkQuota(c: Ctx, extra: number) {
-  const u = await usage(c, c.get("userId"));
-  if (u.bytes + extra > u.quota) fail(413, "Espaço da conta esgotado");
+  const u = await usage(c.env);
+  if (u.bytes + extra > u.quota) fail(413, "A nuvem está cheia. Exclua músicas que ninguém ouve mais para liberar espaço.");
 }
 
 async function recordBlob(c: Ctx, id: string, size: number) {
@@ -362,7 +375,7 @@ async function recordBlob(c: Ctx, id: string, size: number) {
     .run();
 }
 
-app.get("/blobs", async (c) => c.json(await usage(c, c.get("userId"))));
+app.get("/blobs", async (c) => c.json(await usage(c.env)));
 
 app.on("HEAD", "/blobs/:id", async (c) => {
   const head = await c.env.BUCKET.head(r2Key(c.get("userId"), checkId(c.req.param("id"))));
@@ -420,10 +433,15 @@ async function resolveBlobOwner(c: Ctx, id: string): Promise<string> {
 app.get("/blobs/:id", async (c) => {
   const id = checkId(c.req.param("id"));
   const owner = await resolveBlobOwner(c, id);
-  const obj = await c.env.BUCKET.get(r2Key(owner, id), { range: c.req.raw.headers, onlyIf: c.req.raw.headers });
+  return serveObject(c, r2Key(owner, id), "application/octet-stream");
+});
+
+/** Entrega um arquivo do R2, com suporte a Range (o player pula para o meio da música). */
+async function serveObject(c: Ctx, key: string, type: string) {
+  const obj = await c.env.BUCKET.get(key, { range: c.req.raw.headers, onlyIf: c.req.raw.headers });
   if (!obj) fail(404, "Arquivo não encontrado");
   const headers = new Headers({
-    "Content-Type": "application/octet-stream",
+    "Content-Type": type,
     "Accept-Ranges": "bytes",
     ETag: obj.httpEtag,
     "Cache-Control": "private, max-age=31536000, immutable",
@@ -437,7 +455,7 @@ app.get("/blobs/:id", async (c) => {
   }
   headers.set("Content-Length", String(obj.size));
   return new Response(obj.body, { headers });
-});
+}
 
 app.delete("/blobs/:id", async (c) => {
   const id = checkId(c.req.param("id"));
@@ -446,6 +464,279 @@ app.delete("/blobs/:id", async (c) => {
   await c.env.DB.prepare("DELETE FROM blobs WHERE owner = ? AND id = ?").bind(owner, id).run();
   return c.json({ ok: true });
 });
+
+// ---------------- Catálogo compartilhado ----------------
+// Cada música existe uma vez só (MP3, sem criptografia). Antes de enviar ou
+// baixar, o app pergunta se ela já existe: aí só liga na biblioteca da pessoa.
+
+const songKey = (id: string, part: "audio" | "cover") => `songs/${id}.${part === "audio" ? "mp3" : "webp"}`;
+const SONG_COLS = "s.id, s.artist, s.title, s.album, s.duration, s.size, s.cover_size AS coverSize";
+const MAX_SONG = 300 * 1024 * 1024;
+const MAX_COVER = 2 * 1024 * 1024;
+const HASH_RE = /^[A-Za-z0-9_-]{20,64}$/;
+const SOURCE_RE = /^(youtube|spotify|deezer):[A-Za-z0-9_-]{1,64}$/;
+
+const text = (v: unknown, max = 300) => String(v ?? "").trim().slice(0, max);
+
+function songQuery(body: Partial<SongQuery>): SongQuery {
+  return {
+    artist: text(body.artist),
+    title: text(body.title),
+    duration: Math.max(0, Number(body.duration) || 0),
+    hash: typeof body.hash === "string" && HASH_RE.test(body.hash) ? body.hash : undefined,
+    sources: Array.isArray(body.sources) ? body.sources.filter((x) => typeof x === "string" && SOURCE_RE.test(x)).slice(0, 5) : [],
+  };
+}
+
+/** Procura no catálogo: mesma origem → mesmo arquivo → mesmo artista/título com duração parecida. */
+async function findSong(env: Env, q: SongQuery): Promise<SongInfo | null> {
+  if (q.sources?.length) {
+    const hit = await env.DB.prepare(
+      `SELECT ${SONG_COLS} FROM song_sources ss JOIN songs s ON s.id = ss.song_id
+       WHERE ss.source IN (${q.sources.map(() => "?").join(",")}) AND s.status = 'ready' LIMIT 1`,
+    )
+      .bind(...q.sources)
+      .first<SongInfo>();
+    if (hit) return hit;
+  }
+  if (q.hash) {
+    const hit = await env.DB.prepare(`SELECT ${SONG_COLS} FROM songs s WHERE s.source_hash = ? AND s.status = 'ready' LIMIT 1`)
+      .bind(q.hash)
+      .first<SongInfo>();
+    if (hit) return hit;
+  }
+  // Sem duração não dá para saber se é a mesma gravação: melhor não juntar.
+  if (!q.title || !q.duration) return null;
+  return env.DB.prepare(
+    `SELECT ${SONG_COLS} FROM songs s WHERE s.match_key = ? AND s.status = 'ready' AND ABS(s.duration - ?) <= ?
+     ORDER BY ABS(s.duration - ?), s.created_at LIMIT 1`,
+  )
+    .bind(matchKey(q.artist, q.title), q.duration, MATCH_TOLERANCE, q.duration)
+    .first<SongInfo>();
+}
+
+/** Lembra as origens da música (a próxima pessoa que importar o mesmo link nem baixa). */
+function addSources(env: Env, songId: string, sources: string[] = []) {
+  return sources.map((src) => env.DB.prepare("INSERT OR IGNORE INTO song_sources (source, song_id) VALUES (?, ?)").bind(src, songId));
+}
+
+type SongRow = SongInfo & { status: string; mergedInto: string | null; uploadedBy: string };
+
+/** Segue as junções de duplicadas até a música que ficou. */
+async function liveSong(env: Env, id: string): Promise<SongRow | null> {
+  for (let i = 0; i < 5; i++) {
+    const row = await env.DB.prepare(
+      `SELECT ${SONG_COLS}, s.status, s.merged_into AS mergedInto, s.uploaded_by AS uploadedBy FROM songs s WHERE s.id = ?`,
+    )
+      .bind(id)
+      .first<SongRow>();
+    if (!row) return null;
+    if (row.status !== "merged" || !row.mergedInto) return row;
+    id = row.mergedInto;
+  }
+  return null;
+}
+
+/** Já existe? (antes de converter ou baixar) */
+app.post("/songs/match", async (c) => {
+  return c.json({ song: await findSong(c.env, songQuery(await c.req.json())) });
+});
+
+/**
+ * Registra uma música nova antes do envio. Se ela já existir (alguém enviou
+ * enquanto este aparelho convertia), devolve a existente e nada é enviado.
+ */
+app.post("/songs", async (c) => {
+  const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number }>();
+  const q = songQuery(body);
+  if (!q.title) fail(400, "Música sem título");
+  const size = Number(body.size) || 0;
+  const coverSize = Number(body.coverSize) || 0;
+  if (size <= 0 || size > MAX_SONG) fail(413, "Arquivo de música grande demais");
+  if (coverSize < 0 || coverSize > MAX_COVER) fail(413, "Capa grande demais");
+
+  const existing = await findSong(c.env, q);
+  if (existing) {
+    const add = addSources(c.env, existing.id, q.sources);
+    if (add.length) await c.env.DB.batch(add);
+    return c.json({ song: existing, created: false });
+  }
+  await checkQuota(c, size + coverSize);
+  const song: SongInfo = { id: randomId(), artist: q.artist, title: q.title, album: text(body.album), duration: q.duration, size, coverSize };
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO songs (id, match_key, search, artist, title, album, duration, size, cover_size, source_hash, status, uploaded_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    ).bind(
+      song.id,
+      matchKey(song.artist, song.title),
+      searchText(song.artist, song.title, song.album),
+      song.artist,
+      song.title,
+      song.album,
+      song.duration,
+      size,
+      coverSize,
+      q.hash ?? null,
+      c.get("userId"),
+      Date.now(),
+    ),
+    ...addSources(c.env, song.id, q.sources),
+  ]);
+  return c.json({ song, created: true });
+});
+
+/** Música ainda sendo enviada por quem está pedindo. */
+async function pendingSong(c: Ctx) {
+  const id = checkId(c.req.param("id") ?? "");
+  const row = await c.env.DB.prepare("SELECT size, cover_size AS coverSize FROM songs WHERE id = ? AND status = 'pending' AND uploaded_by = ?")
+    .bind(id, c.get("userId"))
+    .first<{ size: number; coverSize: number }>();
+  if (!row) fail(404, "Envio não encontrado (talvez já tenha terminado)");
+  return { id, ...row };
+}
+
+app.put("/songs/:id/audio", async (c) => {
+  const song = await pendingSong(c);
+  const size = Number(c.req.header("Content-Length"));
+  if (size !== song.size) fail(400, "Tamanho diferente do registrado");
+  if (size > MAX_SINGLE_UPLOAD) fail(413, "Use upload em partes");
+  await c.env.BUCKET.put(songKey(song.id, "audio"), c.req.raw.body!, { httpMetadata: { contentType: "audio/mpeg" } });
+  return c.json({ ok: true });
+});
+
+app.put("/songs/:id/cover", async (c) => {
+  const song = await pendingSong(c);
+  const size = Number(c.req.header("Content-Length"));
+  if (!song.coverSize || size !== song.coverSize) fail(400, "Tamanho diferente do registrado");
+  await c.env.BUCKET.put(songKey(song.id, "cover"), c.req.raw.body!, { httpMetadata: { contentType: "image/webp" } });
+  return c.json({ ok: true });
+});
+
+app.post("/songs/:id/mpu", async (c) => {
+  const song = await pendingSong(c);
+  const mpu = await c.env.BUCKET.createMultipartUpload(songKey(song.id, "audio"), { httpMetadata: { contentType: "audio/mpeg" } });
+  return c.json({ uploadId: mpu.uploadId });
+});
+
+app.put("/songs/:id/mpu/:uploadId/:part", async (c) => {
+  const song = await pendingSong(c);
+  const mpu = c.env.BUCKET.resumeMultipartUpload(songKey(song.id, "audio"), c.req.param("uploadId"));
+  return c.json(await mpu.uploadPart(Number(c.req.param("part")), c.req.raw.body!));
+});
+
+app.post("/songs/:id/mpu/:uploadId/complete", async (c) => {
+  const song = await pendingSong(c);
+  const { parts } = await c.req.json<{ parts: R2UploadedPart[] }>();
+  const mpu = c.env.BUCKET.resumeMultipartUpload(songKey(song.id, "audio"), c.req.param("uploadId"));
+  await mpu.complete(parts);
+  return c.json({ ok: true });
+});
+
+/** Envio terminado: confere os arquivos e põe a música no catálogo. */
+app.post("/songs/:id/done", async (c) => {
+  const song = await pendingSong(c);
+  const audio = await c.env.BUCKET.head(songKey(song.id, "audio"));
+  if (!audio || audio.size !== song.size) fail(400, "O arquivo da música não chegou inteiro");
+  if (song.coverSize) {
+    const cover = await c.env.BUCKET.head(songKey(song.id, "cover"));
+    if (!cover || cover.size !== song.coverSize) fail(400, "A capa não chegou inteira");
+  }
+  await c.env.DB.prepare("UPDATE songs SET status = 'ready' WHERE id = ?").bind(song.id).run();
+  return c.json({ ok: true });
+});
+
+/** Busca no catálogo por artista, título ou álbum. */
+app.get("/songs/search", async (c) => {
+  const words = plain(c.req.query("q") ?? "").split(" ").filter(Boolean).slice(0, 6);
+  if (!words.length) return c.json({ songs: [] });
+  const { results } = await c.env.DB.prepare(
+    `SELECT ${SONG_COLS} FROM songs s WHERE s.status = 'ready' AND ${words.map(() => "s.search LIKE ?").join(" AND ")}
+     ORDER BY s.artist, s.title LIMIT 40`,
+  )
+    .bind(...words.map((w) => `%${w}%`))
+    .all<SongInfo>();
+  return c.json({ songs: results });
+});
+
+/** O áudio (MP3) ou a capa. Duplicadas já juntadas entregam a música que ficou. */
+app.get("/songs/:id/:part{audio|cover}", async (c) => {
+  const part = c.req.param("part") as "audio" | "cover";
+  const song = await liveSong(c.env, checkId(c.req.param("id")));
+  if (!song || (song.status === "pending" && song.uploadedBy !== c.get("userId"))) fail(404, "Música não encontrada");
+  if (part === "cover" && !song.coverSize) fail(404, "Música sem capa");
+  return serveObject(c, songKey(song.id, part), part === "audio" ? "audio/mpeg" : "image/webp");
+});
+
+/** Quais destas músicas foram juntadas a outra (o app troca na biblioteca). */
+app.post("/songs/resolve", async (c) => {
+  const { ids } = await c.req.json<{ ids: string[] }>();
+  if (!Array.isArray(ids) || ids.length > 5000) fail(400, "Lista inválida");
+  const merged: Record<string, SongInfo> = {};
+  for (let i = 0; i < ids.length; i += 90) {
+    const slice = ids.slice(i, i + 90).filter((x) => typeof x === "string" && ID_RE.test(x));
+    if (!slice.length) continue;
+    const { results } = await c.env.DB.prepare(`SELECT id FROM songs WHERE status = 'merged' AND id IN (${slice.map(() => "?").join(",")})`)
+      .bind(...slice)
+      .all<{ id: string }>();
+    for (const r of results) {
+      const live = await liveSong(c.env, r.id);
+      if (!live) continue;
+      const { status: _s, mergedInto: _m, uploadedBy: _u, ...info } = live;
+      merged[r.id] = info;
+    }
+  }
+  return c.json({ merged });
+});
+
+/**
+ * Faxina diária (Cron): junta músicas duplicadas que escaparam na hora do envio
+ * (ex.: duas pessoas enviando ao mesmo tempo) e apaga envios abandonados.
+ */
+async function tidyCatalog(env: Env) {
+  // Envios que nunca terminaram (mais de 1 dia).
+  const { results: stale } = await env.DB.prepare("SELECT id FROM songs WHERE status = 'pending' AND created_at < ? LIMIT 200")
+    .bind(Date.now() - 24 * 60 * 60 * 1000)
+    .all<{ id: string }>();
+  for (const { id } of stale) {
+    await env.BUCKET.delete([songKey(id, "audio"), songKey(id, "cover")]);
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM song_sources WHERE song_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM songs WHERE id = ?").bind(id),
+    ]);
+  }
+
+  // Duplicadas: mesmo artista/título/versão e duração parecida.
+  const { results: groups } = await env.DB.prepare(
+    "SELECT match_key AS k FROM songs WHERE status = 'ready' GROUP BY match_key HAVING COUNT(*) > 1 LIMIT 200",
+  ).all<{ k: string }>();
+  let merged = 0;
+  for (const { k } of groups) {
+    // Fica a que tem capa e, empatando, a mais antiga.
+    const { results: rows } = await env.DB.prepare(
+      "SELECT id, duration FROM songs WHERE match_key = ? AND status = 'ready' ORDER BY (cover_size > 0) DESC, created_at",
+    )
+      .bind(k)
+      .all<{ id: string; duration: number }>();
+    const keep: typeof rows = [];
+    for (const r of rows) {
+      const into = keep.find((x) => Math.abs(x.duration - r.duration) <= MATCH_TOLERANCE);
+      if (!into) {
+        keep.push(r);
+        continue;
+      }
+      await env.DB.batch([
+        env.DB.prepare("UPDATE songs SET status = 'merged', merged_into = ? WHERE id = ?").bind(into.id, r.id),
+        env.DB.prepare("UPDATE songs SET merged_into = ? WHERE merged_into = ?").bind(into.id, r.id),
+        env.DB.prepare("UPDATE OR IGNORE song_sources SET song_id = ? WHERE song_id = ?").bind(into.id, r.id),
+        env.DB.prepare("DELETE FROM song_sources WHERE song_id = ?").bind(r.id),
+      ]);
+      await env.BUCKET.delete([songKey(r.id, "audio"), songKey(r.id, "cover")]);
+      merged++;
+    }
+  }
+  console.log(`faxina do catálogo: ${stale.length} envios abandonados, ${merged} duplicadas juntadas`);
+}
 
 // ---------------- Compartilhamento ----------------
 
@@ -517,4 +808,9 @@ app.delete("/shares/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(tidyCatalog(env));
+  },
+} satisfies ExportedHandler<Env>;

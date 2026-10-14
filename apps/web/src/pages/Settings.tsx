@@ -3,6 +3,7 @@ import {
   clearOffline,
   defaultDownloadQuality,
   getQuality,
+  hasQualityChoice,
   offlineUsage,
   setDefaultDownloadQuality,
   setQuality,
@@ -29,6 +30,8 @@ export function SettingsPage() {
   const [local, setLocal] = useState(0);
   const prefs = useStore(prefsStore);
   const [permission, setPermission] = useState(notifyPermission());
+  // Escolha de qualidade só existe nas músicas de antes do catálogo (FLAC + versão leve).
+  const qualityChoice = Object.values(lib.tracks).some(hasQualityChoice);
 
   useEffect(() => {
     offlineUsage().then(setLocal);
@@ -139,58 +142,64 @@ export function SettingsPage() {
 
       <ResolverSettings />
 
-      <section>
-        <h2>Qualidade ao tocar</h2>
-        {(
-          [
-            ["auto", "Automática", "Original no Wi-Fi, versão leve (Opus) nos dados móveis"],
-            ["high", "Máxima", "Sempre FLAC/original"],
-            ["light", "Leve", "Sempre Opus 160 kbps (transparente ao ouvido)"],
-          ] as const
-        ).map(([v, label, hint]) => (
-          <label key={v} className="radio">
-            <input
-              type="radio"
-              name="q"
-              checked={quality === v}
-              onChange={() => {
-                setQuality(v);
-                setQ(v);
-              }}
-            />
-            <span>
-              {label}
-              <small className="muted">{hint}</small>
-            </span>
-          </label>
-        ))}
-      </section>
+      {qualityChoice && (
+        <section>
+          <h2>Qualidade ao tocar</h2>
+          {(
+            [
+              ["auto", "Automática", "Original no Wi-Fi, versão leve (Opus) nos dados móveis"],
+              ["high", "Máxima", "Sempre FLAC/original"],
+              ["light", "Leve", "Sempre Opus 160 kbps (transparente ao ouvido)"],
+            ] as const
+          ).map(([v, label, hint]) => (
+            <label key={v} className="radio">
+              <input
+                type="radio"
+                name="q"
+                checked={quality === v}
+                onChange={() => {
+                  setQuality(v);
+                  setQ(v);
+                }}
+              />
+              <span>
+                {label}
+                <small className="muted">{hint}</small>
+              </span>
+            </label>
+          ))}
+        </section>
+      )}
 
       <section>
         <h2>Downloads offline</h2>
-        <p className="muted small">Qualidade sugerida ao baixar. Você também escolhe na hora, em cada música ou playlist.</p>
-        {(
-          [
-            ["normal", "Normal", "Opus 160 kbps: transparente ao ouvido, ~6× menor"],
-            ["max", "Máxima", "FLAC sem perda: idêntico ao original"],
-          ] as const
-        ).map(([v, label, hint]) => (
-          <label key={v} className="radio">
-            <input
-              type="radio"
-              name="dl"
-              checked={dlQuality === v}
-              onChange={() => {
-                setDefaultDownloadQuality(v);
-                setDlQuality(v);
-              }}
-            />
-            <span>
-              {label}
-              <small className="muted">{hint}</small>
-            </span>
-          </label>
-        ))}
+        {qualityChoice && (
+          <>
+            <p className="muted small">Qualidade sugerida ao baixar. Você também escolhe na hora, em cada música ou playlist.</p>
+            {(
+              [
+                ["normal", "Normal", "Opus 160 kbps: transparente ao ouvido, ~6× menor"],
+                ["max", "Máxima", "FLAC sem perda: idêntico ao original"],
+              ] as const
+            ).map(([v, label, hint]) => (
+              <label key={v} className="radio">
+                <input
+                  type="radio"
+                  name="dl"
+                  checked={dlQuality === v}
+                  onChange={() => {
+                    setDefaultDownloadQuality(v);
+                    setDlQuality(v);
+                  }}
+                />
+                <span>
+                  {label}
+                  <small className="muted">{hint}</small>
+                </span>
+              </label>
+            ))}
+          </>
+        )}
         <p className="muted small">{formatBytes(local)} guardados neste aparelho</p>
         <button
           className="link danger"

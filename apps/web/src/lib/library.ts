@@ -336,8 +336,9 @@ async function refreshShares() {
       try {
         const payload = JSON.parse(fromUtf8.decode(await eciesOpen(getKeys().privateKey, s.payload))) as SharePayload;
         for (const t of Object.values(payload.tracks)) {
-          for (const v of Object.values(t.variants)) if (v) v.owner = s.fromUser;
-          if (t.cover) t.cover.owner = s.fromUser;
+          // Arquivos criptografados são de quem compartilhou; os do catálogo são de todos.
+          for (const v of Object.values(t.variants)) if (v && !v.shared) v.owner = s.fromUser;
+          if (t.cover && !t.cover.shared) t.cover.owner = s.fromUser;
         }
         shared.push({ shareId: s.id, fromUser: s.fromUser, fromEmail: s.fromEmail, ...payload });
       } catch {

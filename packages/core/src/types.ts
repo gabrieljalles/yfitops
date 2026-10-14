@@ -2,16 +2,30 @@ import type { FileKey } from "./crypto";
 
 // ---------- Conteúdo dos itens (sempre criptografado no servidor) ----------
 
-export type Variant = "flac" | "opus" | "orig";
+/** "mp3" = música do catálogo compartilhado; as outras são de antes do catálogo. */
+export type Variant = "mp3" | "flac" | "opus" | "orig";
 
-export interface BlobRef extends FileKey {
+/** Arquivo criptografado, só do dono (envios de antes do catálogo e capas trocadas à mão). */
+export interface EncryptedRef extends FileKey {
   /** ID do blob no R2 (HMAC do conteúdo). */
   id: string;
   /** Dono do blob (para músicas recebidas por compartilhamento). */
   owner?: string;
   size: number;
   mime: string;
+  shared?: undefined;
 }
+
+/** Arquivo do catálogo compartilhado (sem criptografia): /api/songs/<id>/<shared>. */
+export interface SharedRef {
+  /** ID da música no catálogo. */
+  id: string;
+  shared: "audio" | "cover";
+  size: number;
+  mime: string;
+}
+
+export type BlobRef = EncryptedRef | SharedRef;
 
 export interface Track {
   title: string;
@@ -35,6 +49,8 @@ export interface Track {
   alsoFrom?: string[];
   /** Quando foi marcada como favorita (ausente = não é favorita). */
   favoriteAt?: number;
+  /** Música do catálogo compartilhado que esta faixa usa. */
+  song?: string;
   addedAt: number;
 }
 

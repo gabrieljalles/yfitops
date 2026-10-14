@@ -1,9 +1,15 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { Cover } from "../components/Cover";
+import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
+import { addSong, coverRef, searchCatalog, songTrackId } from "../lib/catalog";
 import { libraryStore, sharedTrackId } from "../lib/library";
 import { useStore } from "../lib/observable";
+import { playList } from "../lib/player";
 import { allTags, buildIndex } from "../lib/search";
-import type { Track } from "@yfitops/core";
+import { formatTime } from "../lib/tracks";
+import { attempt } from "../lib/ui";
+import type { SongInfo, Track } from "@yfitops/core";
 
 export function SearchPage({ initialTag }: { initialTag?: string }) {
   const lib = useStore(libraryStore);
@@ -49,10 +55,75 @@ export function SearchPage({ initialTag }: { initialTag?: string }) {
         </div>
       )}
       {query.trim() || tags.length ? (
-        <TrackList ids={results} empty="Nada encontrado." />
+        <TrackList ids={results} empty={query.trim().length >= 2 ? "Nada na sua biblioteca." : "Nada encontrado."} />
       ) : (
         <p className="muted empty">Busque por qualquer coisa ou escolha tags acima.</p>
       )}
+      {!tags.length && <CatalogResults query={query} />}
     </div>
+  );
+}
+
+/**
+ * Músicas que outras pessoas enviaram e que você ainda não tem. Adicionar não
+ * gasta espaço: a biblioteca só passa a apontar para a música do catálogo.
+ */
+function CatalogResults({ query }: { query: string }) {
+  const lib = useStore(libraryStore);
+  const [songs, setSongs] = useState<SongInfo[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const text = query.trim();
+
+  useEffect(() => {
+    if (text.length < 2) return setSongs(null);
+    let alive = true;
+    const timer = setTimeout(() => {
+      searchCatalog(text).then(
+        (r) => alive && setSongs(r),
+        () => alive && setSongs(null), // offline: só a biblioteca
+      );
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [text]);
+
+  const missing = (songs ?? []).filter((s) => !lib.tracks[songTrackId(s.id)]);
+  if (!missing.length) return null;
+
+  const add = (s: SongInfo, play: boolean) =>
+    attempt(async () => {
+      setBusy(s.id);
+      try {
+        const { id } = await addSong(s);
+        if (play) playList([id]);
+      } finally {
+        setBusy(null);
+      }
+    }, play ? undefined : "Adicionada à biblioteca");
+
+  return (
+    <section className="catalog-results">
+      <h4>No yfitops</h4>
+      <p className="muted small">Músicas que outras pessoas já trouxeram. Adicionar não ocupa espaço.</p>
+      <ul className="tracks">
+        {missing.map((s) => (
+          <li key={s.id}>
+            <button className="track-main" onClick={() => void add(s, true)} disabled={busy === s.id} title="Adicionar e tocar">
+              <Cover cover={coverRef(s)} seed={s.title + s.artist} size={44} />
+              <span className="track-text">
+                <span className="track-title">{s.title}</span>
+                <span className="track-sub">{[s.artist, s.album].filter(Boolean).join(" · ")}</span>
+              </span>
+              <span className="track-time">{formatTime(s.duration)}</span>
+            </button>
+            <button className="icon-btn" title="Adicionar à biblioteca" onClick={() => void add(s, false)} disabled={busy === s.id}>
+              <Icon name="plus" size={18} />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

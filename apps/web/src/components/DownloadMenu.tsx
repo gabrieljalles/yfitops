@@ -62,7 +62,7 @@ export function DownloadMenu({ ids, className }: { ids: string[]; className: str
                   {at && <Icon name="check" size={14} />}
                 </span>
                 <span className="muted small">
-                  {choice ? `${LABEL[q].detail} · ` : "Versão única · "}
+                  {choice ? `${LABEL[q].detail} · ` : "MP3 · "}
                   {formatBytes(downloadSize(ids, q))}
                 </span>
               </button>

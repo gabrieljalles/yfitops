@@ -276,35 +276,25 @@ export function UploadPage() {
         </summary>
         <ul>
           <li>
-            <strong>Formatos comuns e leves</strong> (MP3, AAC/M4A, OGG, Opus)
-            ficam <strong>exatamente como estão</strong>. Já são pequenos, e
-            reconverter só pioraria.
+            Tudo vira <strong>MP3 192 kbps</strong>: toca em qualquer aparelho e
+            ocupa pouco (cerca de 6 MB por música de 4 minutos).
           </li>
           <li>
-            <strong>Formatos sem perda e pesados</strong> (WAV, AIFF, ALAC, APE,
-            WavPack, TTA, FLAC) viram <strong>FLAC</strong>, cerca de 40–60% do
-            tamanho de um WAV, com as mesmas amostras. Antes de enviar, o app
-            confere bit a bit com o original. Se algo não bater, guarda o
-            original.
+            <strong>MP3 de até 192 kbps</strong> fica como está (reconverter só
+            pioraria). MP3 maior, AAC, Opus, OGG, WMA e outros são convertidos.
           </li>
           <li>
-            <strong>DSD</strong> (DSF/DFF) vira FLAC 24-bit/176,4 kHz: a
-            conversão padrão de estúdio, inaudível e muito menor. Por natureza
-            do DSD, essa não é uma cópia bit a bit.
+            <strong>Formatos sem perda</strong> (FLAC, WAV, AIFF, ALAC, DSD…)
+            também viram MP3. Ficam bem menores, mas deixam de ser sem perda.
           </li>
           <li>
-            <strong>Formatos com perda menos comuns</strong> (WMA, AC3, DTS,
-            MP2, AMR…): o original é guardado intacto, mais uma versão para
-            tocar em qualquer aparelho.
+            <strong>Vídeos</strong> (MP4, MKV, WEBM, MOV…): o app usa só o áudio.
           </li>
           <li>
-            <strong>Vídeos</strong> (MP4, MKV, WEBM, MOV…): o app separa só o
-            áudio, sem reconverter, e descarta o vídeo.
-          </li>
-          <li>
-            Arquivos grandes também ganham uma versão{" "}
-            <strong>Opus 160 kbps</strong>, leve, para o 4G. Tudo é
-            criptografado neste aparelho antes de subir.
+            <strong>A nuvem é compartilhada:</strong> se alguém já trouxe a mesma
+            música (mesmo artista, título e duração), nada é enviado: ela só
+            entra na sua biblioteca. As músicas ficam visíveis na busca de quem
+            usa o app, mas ninguém vê a sua biblioteca, playlists ou favoritas.
           </li>
         </ul>
       </details>

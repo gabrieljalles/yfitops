@@ -65,9 +65,38 @@ export interface LosslessResult {
   light: { data: Uint8Array; mime: string };
 }
 
-export type Stage = "carregando FFmpeg" | "FLAC" | "verificando" | "versão leve" | "DSD → FLAC" | "extraindo áudio";
+export type Stage = "carregando FFmpeg" | "FLAC" | "verificando" | "versão leve" | "DSD → FLAC" | "extraindo áudio" | "MP3";
 
-const TEMP_FILES = ["out.flac", "pcm.f32", "out.m4a", "a.md5", "b.md5"];
+const TEMP_FILES = ["out.flac", "pcm.f32", "out.m4a", "out.mp3", "a.md5", "b.md5"];
+
+/** Qualidade das músicas do catálogo. */
+export const MP3_KBPS = 192;
+
+/**
+ * Converte qualquer áudio (ou vídeo) para MP3 192 kbps, o formato único do
+ * catálogo. Sem tags no arquivo: título e artista ficam no catálogo.
+ * `copy`: já é MP3 leve; só tira as tags e a capa embutida, sem reconverter
+ * (reconverter MP3 em MP3 só piora o som).
+ */
+export function toMp3(
+  input: Uint8Array,
+  ext: string,
+  onStage: (stage: Stage, progress: number) => void,
+  copy = false,
+): Promise<Uint8Array> {
+  return withInput(input, ext, onStage, async (ff, src) => {
+    const codec = copy
+      ? ["-c:a", "copy"]
+      : // MP3 vai até 48 kHz: fontes de alta resolução (96 kHz, DSD) descem para 44,1 kHz.
+        ["-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", `${MP3_KBPS}k`];
+    await run(
+      ff,
+      ["-i", src, "-map", "0:a:0", "-vn", "-map_metadata", "-1", ...codec, "-id3v2_version", "0", "-write_xing", "1", "out.mp3"],
+      (p) => onStage("MP3", p),
+    );
+    return (await ff.readFile("out.mp3")) as Uint8Array;
+  });
+}
 
 /** Carrega o FFmpeg, grava a entrada e limpa os arquivos temporários no fim. */
 async function withInput<T>(

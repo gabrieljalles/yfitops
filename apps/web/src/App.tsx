@@ -7,6 +7,7 @@ import { SyncButton } from "./components/SyncButton";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
 import { loadOfflineIndex } from "./lib/blobs";
+import { reconcileMerges } from "./lib/catalog";
 import { jobsStore } from "./lib/importer";
 import { loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
@@ -40,11 +41,13 @@ export function App() {
       resetLibrary();
       return;
     }
-    void loadLocal().then(() => sync());
+    // Depois do sync: músicas que a faxina do servidor juntou viram uma só aqui também (no máximo a cada 6 h).
+    const syncAll = () => sync().then(() => reconcileMerges().catch(() => {}));
+    void loadLocal().then(syncAll);
     void loadOfflineIndex();
-    const onFocus = () => document.visibilityState === "visible" && void sync();
-    const onOnline = () => void sync();
-    const interval = setInterval(() => void sync(), 60_000);
+    const onFocus = () => document.visibilityState === "visible" && void syncAll();
+    const onOnline = () => void syncAll();
+    const interval = setInterval(() => void syncAll(), 60_000);
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("online", onOnline);
     return () => {
