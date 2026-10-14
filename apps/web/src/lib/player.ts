@@ -1,5 +1,5 @@
 import type { BlobRef, Track } from "@yfitops/core";
-import { coverUrl, offlineStore, pickVariant, readBlob, streamUrl, variantCandidates } from "./blobs";
+import { coverUrl, offlineStore, pickVariant, readBlob, variantCandidates } from "./blobs";
 import { getTrack, recordPlay } from "./library";
 import { createStore } from "./observable";
 import { prefsStore } from "./prefs";
@@ -80,6 +80,8 @@ let loadToken = 0;
 let playedFor = 0;
 let lastTick = 0;
 let counted = false;
+/** A próxima da fila já foi buscada (uma vez por música tocando). */
+let prefetched = false;
 /** Ordem original antes de embaralhar. */
 let unshuffled: string[] | null = null;
 
@@ -104,10 +106,6 @@ function remember(id: string, url: string) {
 }
 
 async function urlFor(id: string, ref: BlobRef): Promise<string> {
-  // Música do catálogo fora do aparelho: toca direto do servidor enquanto baixa
-  // (começa na hora e não depende de o app decifrar nada com a tela desligada).
-  const direct = streamUrl(ref, offlineStore.get());
-  if (direct) return direct;
   const key = `${id}:${ref.id}`;
   const hit = decoded.get(key);
   if (hit) return hit;
@@ -163,6 +161,7 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
     audio.volume = 1;
   }
   crossStarted = false;
+  prefetched = false;
   set({ index, loading: true, time: 0, duration: t.duration, error: null });
   playedFor = 0;
   lastTick = 0;
@@ -213,10 +212,13 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
       set({ loading: false });
     }
   }
-  void prefetch(index + 1);
 }
 
-/** Baixa e decifra a próxima da fila, para a troca ser instantânea (as do catálogo tocam direto). */
+/**
+ * Baixa a próxima da fila quando a atual já passou da metade (ou falta pouco):
+ * a troca fica instantânea, inclusive com a tela desligada, e quem pula músicas
+ * no começo não gasta download com a que nem vai ouvir.
+ */
 async function prefetch(index: number) {
   const id = playerStore.get().queue[index];
   const t = id ? getTrack(id) : undefined;
@@ -338,6 +340,11 @@ function onTimeUpdate() {
   if (!counted && id && playedFor >= Math.min(30, (audio.duration || 60) / 2)) {
     counted = true;
     void recordPlay(id);
+  }
+  if (!prefetched && audio.duration && (now >= audio.duration / 2 || audio.duration - now <= 60)) {
+    prefetched = true;
+    const target = crossfadeTarget();
+    if (target !== null) void prefetch(target);
   }
   // Transição suave: perto do fim, a próxima começa no outro deck.
   const cf = canCrossfade ? prefsStore.get().crossfade : 0;

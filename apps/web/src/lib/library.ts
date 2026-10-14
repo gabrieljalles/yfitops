@@ -95,7 +95,8 @@ export async function loadLocal() {
 
 /** Atualiza a contagem de alterações esperando envio. */
 async function refreshPending() {
-  const pending = await (await db()).count("outbox");
+  // O histórico de reprodução vai em lote, sem pressa: não conta como "para enviar".
+  const pending = (await (await db()).getAll("outbox")).filter((it) => it.kind !== "play").length;
   libraryStore.set((l) => ({ ...l, pending }));
 }
 
@@ -124,7 +125,7 @@ export async function saveItem<K extends ItemKind>(kind: K, id: string, value: I
   await tx.objectStore("outbox").put({ id, kind, enc, deleted: false });
   await tx.done;
   void refreshPending();
-  scheduleSync();
+  scheduleSync(kind === "play" ? PLAYS_DELAY : undefined);
 }
 
 export async function deleteItem(kind: ItemKind, id: string) {
@@ -135,7 +136,7 @@ export async function deleteItem(kind: ItemKind, id: string) {
   await tx.objectStore("outbox").put({ id, kind, enc: null, deleted: true });
   await tx.done;
   void refreshPending();
-  scheduleSync();
+  scheduleSync(kind === "play" ? PLAYS_DELAY : undefined);
 }
 
 export async function recordPlay(trackId: string) {
@@ -234,16 +235,48 @@ export function getTrackFrom(lib: Library, id: string): Track | undefined {
 // ---------------- Sync com o servidor ----------------
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+let due = Infinity;
 let running: Promise<void> | null = null;
 
-export function scheduleSync(delay = 800) {
+/**
+ * Cada música tocada vira um item do histórico. Em vez de uma requisição por
+ * música, o histórico vai junto com a próxima alteração, ou em lote a cada 5 min,
+ * ou quando o app sai da tela.
+ */
+const PLAYS_DELAY = 5 * 60_000;
+
+/** Envia as alterações daqui a pouco (várias seguidas vão numa requisição só). */
+export function scheduleSync(delay = 2000) {
+  const at = Date.now() + delay;
+  if (timer && at >= due) return; // já tem um envio marcado para antes
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => void sync(), delay);
+  due = at;
+  timer = setTimeout(() => {
+    timer = null;
+    due = Infinity;
+    void sync(true);
+  }, delay);
 }
 
-export function sync(): Promise<void> {
-  running ??= doSync().finally(() => (running = null));
+/**
+ * `pushOnly`: só envia o que mudou aqui (1 requisição). O sync completo também
+ * busca o que mudou em outros aparelhos e é chamado pelo app de tempos em tempos.
+ */
+export function sync(pushOnly = false): Promise<void> {
+  running ??= doSync(pushOnly).finally(() => (running = null));
   return running;
+}
+
+// Saindo da tela (trocou de app, bloqueou): manda o que ficou na fila, inclusive o histórico.
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && timer) {
+      clearTimeout(timer);
+      timer = null;
+      due = Infinity;
+      void sync(true);
+    }
+  });
 }
 
 /**
@@ -254,7 +287,11 @@ const isOffline = (e: unknown) =>
   e instanceof TypeError ||
   (e instanceof ApiError && ([502, 503, 504].includes(e.status) || (e.status === 500 && e.message === "Erro 500")));
 
-async function doSync() {
+/** Compartilhamentos mudam pouco: confere no máximo a cada 10 min (compartilhar/parar atualiza na hora). */
+const SHARES_EVERY = 10 * 60_000;
+let sharesAt = 0;
+
+async function doSync(pushOnly = false) {
   if (!navigator.onLine) {
     libraryStore.set((l) => ({ ...l, offline: true }));
     return;
@@ -262,9 +299,11 @@ async function doSync() {
   libraryStore.set((l) => ({ ...l, syncing: true }));
   try {
     await push();
-    await pull();
-    await refreshShares();
-    libraryStore.set((l) => ({ ...l, error: null, offline: false, lastSync: Date.now() }));
+    if (!pushOnly) {
+      await pull();
+      if (Date.now() - sharesAt > SHARES_EVERY) await refreshShares();
+    }
+    libraryStore.set((l) => ({ ...l, error: null, offline: false, ...(!pushOnly && { lastSync: Date.now() }) }));
   } catch (e) {
     // Sem servidor: nada se perde, as alterações ficam na fila e vão na próxima tentativa.
     if (isOffline(e)) libraryStore.set((l) => ({ ...l, offline: true, error: null }));
@@ -327,6 +366,7 @@ async function pull() {
 // ---------------- Compartilhamento ----------------
 
 async function refreshShares() {
+  sharesAt = Date.now();
   const me = getSession().userId;
   const { shares } = await api.json<{ shares: ShareInfo[] }>("/shares");
   const shared: SharedGroup[] = [];

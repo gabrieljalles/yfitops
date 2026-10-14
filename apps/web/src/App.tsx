@@ -9,7 +9,7 @@ import { TrackSheet } from "./components/TrackSheet";
 import { loadOfflineIndex } from "./lib/blobs";
 import { reconcileMerges } from "./lib/catalog";
 import { jobsStore } from "./lib/importer";
-import { loadLocal, resetLibrary, sync } from "./lib/library";
+import { libraryStore, loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
 import { playerStore } from "./lib/player";
 import { pendingRequestsStore, refreshAccount, sessionStore } from "./lib/session";
@@ -47,13 +47,23 @@ export function App() {
       return;
     }
     void refreshAccount();
-    // Depois do sync: músicas que a faxina do servidor juntou viram uma só aqui também (no máximo a cada 6 h).
+    // Depois do sync: músicas que a faxina do servidor juntou (ou que o
+    // administrador apagou) acompanham aqui também (no máximo a cada 6 h).
     const syncAll = () => sync().then(() => reconcileMerges().catch(() => {}));
     void loadLocal().then(syncAll);
     void loadOfflineIndex();
-    const onFocus = () => document.visibilityState === "visible" && void syncAll();
+    // Economia de requisições: o que você muda vai na hora (saveItem); buscar o
+    // que mudou em outro aparelho é a cada 5 min com o app aberto e na tela, ou
+    // ao voltar para o app (se o último sync tiver mais de 1 min).
+    const stale = (ms: number) => Date.now() - (libraryStore.get().lastSync ?? 0) > ms;
+    const onFocus = () => document.visibilityState === "visible" && stale(60_000) && void syncAll();
     const onOnline = () => void syncAll();
-    const interval = setInterval(() => (void syncAll(), void refreshAccount()), 60_000);
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void syncAll();
+      // Só o administrador precisa saber de tempos em tempos (pedidos de acesso).
+      if (sessionStore.get()?.admin) void refreshAccount();
+    }, 5 * 60_000);
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("online", onOnline);
     return () => {

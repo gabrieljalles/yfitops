@@ -123,7 +123,8 @@ export async function addSong(song: SongInfo, extras: SongExtras = {}): Promise<
 
 // ---------------- Duplicadas juntadas pela faxina do servidor ----------------
 
-const RECONCILE_EVERY = 60 * 60 * 1000;
+// A faxina do servidor roda 1x por dia: conferir a cada 6 h basta.
+const RECONCILE_EVERY = 6 * 60 * 60 * 1000;
 let lastReconcile = 0;
 
 /**

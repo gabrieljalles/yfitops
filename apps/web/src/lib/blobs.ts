@@ -1,7 +1,8 @@
 import { decryptFile, encryptContent, type BlobRef, type Track, type Variant } from "@yfitops/core";
-import { api, ApiError, authedUrl } from "./api";
+import { api, ApiError } from "./api";
 import { db } from "./db";
 import { createStore } from "./observable";
+import { prefsStore } from "./prefs";
 import { getKeys, getSession } from "./session";
 
 const SINGLE_LIMIT = 80 * 1024 * 1024;
@@ -60,10 +61,6 @@ const ownerQuery = (ref: BlobRef) => (!ref.shared && ref.owner && ref.owner !== 
 /** Caminho na API: catálogo (aberto) ou arquivo criptografado. */
 const pathOf = (ref: BlobRef) => (ref.shared ? `/songs/${ref.id}/${ref.shared}` : `/blobs/${ref.id}${ownerQuery(ref)}`);
 
-/** Música do catálogo que não está no aparelho: o player toca direto do servidor, enquanto baixa. */
-export const streamUrl = (ref: BlobRef, offline: Set<string>): string | null =>
-  ref.shared && !offline.has(fileKey(ref)) ? authedUrl(pathOf(ref)) : null;
-
 /** Chaves dos arquivos guardados offline (para a UI mostrar o que está baixado). */
 export const offlineStore = createStore<Set<string>>(new Set());
 
@@ -73,16 +70,70 @@ export async function loadOfflineIndex() {
 
 export const isOffline = (set: Set<string>, ref: BlobRef | undefined) => Boolean(ref && set.has(fileKey(ref)));
 
+/**
+ * Pega o arquivo, pedindo ao servidor no máximo UMA vez por aparelho:
+ * 1. baixado para offline → do aparelho;
+ * 2. já ouvido antes (cache) → do aparelho;
+ * 3. senão, uma requisição só (o arquivo inteiro), que vai para o cache.
+ * `keep`: guardar como download offline (sai do cache, não é apagado sozinho).
+ */
 async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
   const d = await db();
-  const cached = await d.get("files", fileKey(ref));
-  if (cached) return new Uint8Array(await cached.data.arrayBuffer());
-  const sealed = await api.bytes(pathOf(ref));
+  const key = fileKey(ref);
+  const saved = await d.get("files", key);
+  if (saved) return new Uint8Array(await saved.data.arrayBuffer());
+
+  const hit = await d.get("cache", key);
+  let sealed: Uint8Array;
+  if (hit) {
+    sealed = new Uint8Array(await hit.data.arrayBuffer());
+    if (!keep) await d.put("cache", { ...hit, at: Date.now() }); // tocou de novo: fica mais tempo
+  } else {
+    sealed = await api.bytes(pathOf(ref));
+  }
   if (keep) {
-    await d.put("files", { key: fileKey(ref), data: new Blob([sealed]), size: sealed.length, at: Date.now() });
-    offlineStore.set((s) => new Set(s).add(fileKey(ref)));
+    await d.put("files", { key, data: new Blob([sealed]), size: sealed.length, at: Date.now() });
+    if (hit) await d.delete("cache", key);
+    offlineStore.set((s) => new Set(s).add(key));
+  } else if (!hit) {
+    await d.put("cache", { key, data: new Blob([sealed]), size: sealed.length, at: Date.now() });
+    void trimCache();
   }
   return sealed;
+}
+
+/** Guarda no cache um arquivo que este aparelho já tem (ex.: acabou de enviar): tocar não baixa de volta. */
+export async function rememberLocal(ref: BlobRef, data: Uint8Array) {
+  await (await db()).put("cache", { key: fileKey(ref), data: new Blob([data]), size: data.length, at: Date.now() });
+  void trimCache();
+}
+
+/** Tira do cache as músicas ouvidas há mais tempo até caber no limite (Ajustes). */
+async function trimCache() {
+  const limit = prefsStore.get().cacheMB * 1024 * 1024;
+  const d = await db();
+  const all = (await d.getAll("cache")).sort((a, b) => a.at - b.at);
+  let total = all.reduce((n, f) => n + f.size, 0);
+  for (const f of all) {
+    if (total <= limit) break;
+    await d.delete("cache", f.key);
+    total -= f.size;
+  }
+}
+
+/** Espaço das músicas já ouvidas guardadas no aparelho. */
+export async function cacheUsage(): Promise<number> {
+  return (await (await db()).getAll("cache")).reduce((n, f) => n + f.size, 0);
+}
+
+export async function clearCache() {
+  await (await db()).clear("cache");
+}
+
+/** Já está no aparelho (baixada ou no cache)? Aí tocar não custa nada. */
+export async function isLocal(ref: BlobRef): Promise<boolean> {
+  const d = await db();
+  return Boolean((await d.getKey("files", fileKey(ref))) ?? (await d.getKey("cache", fileKey(ref))));
 }
 
 export async function readBlob(ref: BlobRef, keep = false): Promise<Uint8Array> {

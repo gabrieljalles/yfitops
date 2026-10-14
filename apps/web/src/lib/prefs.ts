@@ -17,6 +17,8 @@ export interface Prefs {
   resolverUrl: string;
   /** Senha do resolver (RESOLVER_TOKEN), se ele tiver uma. */
   resolverToken: string;
+  /** Limite do cache de músicas ouvidas, em MB (tocar de novo não usa a internet nem o servidor). */
+  cacheMB: number;
 }
 
 const DEFAULTS: Prefs = {
@@ -26,6 +28,7 @@ const DEFAULTS: Prefs = {
   notify: true,
   resolverUrl: "",
   resolverToken: "",
+  cacheMB: 1024,
 };
 const KEY = "prefs";
 

@@ -68,6 +68,9 @@ export function SearchPage({ initialTag }: { initialTag?: string }) {
  * Músicas que outras pessoas enviaram e que você ainda não tem. Adicionar não
  * gasta espaço: a biblioteca só passa a apontar para a música do catálogo.
  */
+/** Buscas já feitas nesta sessão: repetir (ou apagar uma letra) não pergunta de novo ao servidor. */
+const catalogCache = new Map<string, SongInfo[]>();
+
 function CatalogResults({ query }: { query: string }) {
   const lib = useStore(libraryStore);
   const [songs, setSongs] = useState<SongInfo[] | null>(null);
@@ -75,14 +78,18 @@ function CatalogResults({ query }: { query: string }) {
   const text = query.trim();
 
   useEffect(() => {
-    if (text.length < 2) return setSongs(null);
+    if (text.length < 3) return setSongs(null);
+    const key = text.toLowerCase();
+    const known = catalogCache.get(key);
+    if (known) return setSongs(known);
     let alive = true;
+    // Espera a pessoa parar de digitar: uma requisição por busca, não por letra.
     const timer = setTimeout(() => {
       searchCatalog(text).then(
-        (r) => alive && setSongs(r),
+        (r) => (catalogCache.set(key, r), alive && setSongs(r)),
         () => alive && setSongs(null), // offline: só a biblioteca
       );
-    }, 400);
+    }, 600);
     return () => {
       alive = false;
       clearTimeout(timer);

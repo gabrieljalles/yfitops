@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  cacheUsage,
+  clearCache,
   clearOffline,
   defaultDownloadQuality,
   getQuality,
@@ -28,6 +30,7 @@ export function SettingsPage() {
   const [quality, setQ] = useState<Quality>(getQuality());
   const [dlQuality, setDlQuality] = useState<DownloadQuality>(defaultDownloadQuality());
   const [local, setLocal] = useState(0);
+  const [cached, setCached] = useState(0);
   const prefs = useStore(prefsStore);
   const [permission, setPermission] = useState(notifyPermission());
   // Escolha de qualidade só existe nas músicas de antes do catálogo (FLAC + versão leve).
@@ -35,6 +38,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     offlineUsage().then(setLocal);
+    cacheUsage().then(setCached);
   }, []);
 
   return (
@@ -219,6 +223,39 @@ export function SettingsPage() {
           }}
         >
           Apagar downloads
+        </button>
+      </section>
+
+      <section>
+        <h2>Músicas já ouvidas</h2>
+        <p className="muted small">
+          Cada música vem do servidor uma vez só: depois de ouvida, fica guardada aqui e tocar de novo não usa internet. Quando passa do limite,
+          saem as ouvidas há mais tempo.
+        </p>
+        <div className="setting-row">
+          <span>Guardar até</span>
+          <Segmented
+            value={String(prefs.cacheMB)}
+            onChange={(v) => setPref("cacheMB", Number(v))}
+            options={[
+              ["512", "500 MB"],
+              ["1024", "1 GB"],
+              ["2048", "2 GB"],
+              ["4096", "4 GB"],
+            ]}
+          />
+        </div>
+        <p className="muted small">{formatBytes(cached)} guardados agora</p>
+        <button
+          className="link danger"
+          onClick={() =>
+            void attempt(async () => {
+              await clearCache();
+              setCached(0);
+            }, "Músicas ouvidas apagadas do aparelho")
+          }
+        >
+          Limpar
         </button>
       </section>
 

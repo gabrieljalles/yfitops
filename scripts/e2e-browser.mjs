@@ -39,6 +39,13 @@ const page = await ctx.newPage();
 const logs = [];
 page.on("console", (m) => (m.type() === "error" || m.type() === "warning") && logs.push(`[${m.type()}] ${m.text()}`));
 page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
+// Economia: quantas vezes cada música foi pedida ao servidor (a meta é no máximo 1).
+const audioRequests = new Map();
+page.on("request", (r) => {
+  const m = r.url().match(/\/api\/songs\/([^/]+)\/audio/);
+  if (m) audioRequests.set(m[1], (audioRequests.get(m[1]) ?? 0) + 1);
+});
+const maxAudioRequests = () => Math.max(0, ...audioRequests.values());
 // Responde o diálogo do próprio app (o que substituiu o prompt() do navegador).
 const answerDialog = async (p, text) => {
   await p.locator(".dialog-input").fill(text);
@@ -151,6 +158,15 @@ try {
   await page.getByRole("button", { name: /^\s*baixado$/ }).waitFor({ timeout: 30000 });
   console.log("   download offline ✓");
   await shot("10-grupo");
+
+  step("tocar de novo e baixar não pedem a música outra vez");
+  const before = [...audioRequests.values()].reduce((a, b) => a + b, 0);
+  await page.goto(URL + "#/biblioteca");
+  await page.locator(".track-main").first().click();
+  await page.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
+  const after = [...audioRequests.values()].reduce((a, b) => a + b, 0);
+  if (after !== before || maxAudioRequests() > 1) throw new Error(`música pedida ${maxAudioRequests()}x (antes ${before}, depois ${after})`);
+  console.log(`   requisições de áudio por música: ${maxAudioRequests()} (meta: no máximo 1) ✓`);
 
   step("celular");
   await page.setViewportSize({ width: 390, height: 844 });

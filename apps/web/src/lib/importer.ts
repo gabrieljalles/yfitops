@@ -1,7 +1,8 @@
 import { parseBuffer, type IAudioMetadata } from "music-metadata";
 import { describeSource } from "@yfitops/core";
 import { lookupArtist, splitArtistTitle, UNKNOWN_ARTIST } from "./artist";
-import { addSong, fileHash, findInCatalog, publishSong } from "./catalog";
+import { addSong, audioRef, coverRef, fileHash, findInCatalog, publishSong } from "./catalog";
+import { rememberLocal } from "./blobs";
 import { notify } from "./notify";
 import { refreshUsage } from "./usage";
 import { MP3_KBPS, toMp3, type Stage } from "./ffmpeg";
@@ -299,6 +300,10 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
   );
   // Outra pessoa enviou a mesma enquanto este aparelho convertia.
   if (!created) return linkExisting(jobId, song, extras, sourceInfo);
+  // Este aparelho já tem o MP3 e a capa: tocar não precisa baixar de volta.
+  await rememberLocal(audioRef(song), audio).catch(() => {});
+  const cref = coverRef(song);
+  if (cref && cover) await rememberLocal(cref, cover).catch(() => {});
 
   const { id } = await addSong(song, {
     tags: extras.tags,
