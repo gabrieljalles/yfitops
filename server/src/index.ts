@@ -990,7 +990,7 @@ app.post("/admin/consumption", async (c) => {
       }) { sum { requests } dimensions { actionType } }
       storage: r2StorageAdaptiveGroups(limit: 1, orderBy: [datetime_DESC], filter: {
         datetime_geq: ${q(new Date(now.getTime() - 3 * 86_400_000).toISOString())}, datetime_leq: ${q(now.toISOString())}, bucketName: ${q(env.R2_BUCKET_NAME)}
-      }) { max { payloadSize metadataSize objectCount } }
+      }) { max { payloadSize metadataSize objectCount } dimensions { datetime } }
       workers: workersInvocationsAdaptive(limit: 100, filter: {
         scriptName: ${q(env.WORKER_NAME)}, datetime_geq: ${q(start.toISOString())}, datetime_leq: ${q(now.toISOString())}
       }) { sum { requests } dimensions { date } }
