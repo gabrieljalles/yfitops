@@ -1,47 +1,29 @@
 :root {
-  --bg: #fafaf8;
-  --surface: #ffffff;
-  --surface-2: #f1f0ec;
-  --text: #161616;
-  --muted: #77756f;
-  --line: #e6e4de;
-  --accent: #161616;
-  --accent-text: #fafaf8;
-  --danger: #b4412f;
-  --vinyl: #1d1d1d;
-  --vinyl-groove: #2f2f2f;
+  /* Tema único: fundo preto, destaque lilás (#D783E0) com miolo branco. */
+  --bg: #000000;
+  --surface: #0e0e0e;
+  --surface-2: #1a1a1a;
+  --text: #ecebe7;
+  --muted: #8d8b85;
+  --line: #242424;
+  --accent: #d783e0;
+  --accent-text: #ffffff;
+  --danger: #e0735f;
+  --vinyl: #050505;
+  --vinyl-groove: #1c1c1c;
   --vinyl-shine: rgba(255, 255, 255, 0.12);
   /* Tons dos avisos (rótulo do mini vinil). */
-  --brand: #e0a43a;
-  --tone-error: #d9573f;
-  --tone-warn: #e2a72e;
-  --tone-ok: #4f9d69;
+  --brand: #d783e0;
+  --tone-error: #ec7a63;
+  --tone-warn: #efc15a;
+  --tone-ok: #6fbf89;
+  --youtube: #ff0033;
+  --spotify: #1ed760;
   --radius: 10px;
   --nav-w: 210px;
   --bar-h: 64px;
   --mobile-nav-h: 58px;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f0f0f;
-    --surface: #161616;
-    --surface-2: #1e1e1e;
-    --text: #ecebe7;
-    --muted: #8d8b85;
-    --line: #262626;
-    --accent: #ecebe7;
-    --accent-text: #0f0f0f;
-    --danger: #e0735f;
-    --vinyl: #050505;
-    --vinyl-groove: #1c1c1c;
-    --brand: #e8b04f;
-    --tone-error: #ec7a63;
-    --tone-warn: #efc15a;
-    --tone-ok: #6fbf89;
-    color-scheme: dark;
-  }
+  color-scheme: dark;
 }
 
 * {
@@ -170,7 +152,7 @@ h4 {
   color: var(--text);
 }
 .nav button.on {
-  color: var(--text);
+  color: var(--accent);
   background: var(--surface-2);
 }
 .dot {
@@ -205,6 +187,7 @@ h4 {
 
 .section-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
@@ -212,6 +195,46 @@ h4 {
 }
 .section-head h2 {
   margin: 0;
+}
+
+/* Botão de sync da tela inicial: a cor diz o estado. */
+.sync-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 5px 12px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  white-space: nowrap;
+  transition:
+    color 0.2s,
+    border-color 0.2s;
+}
+.sync-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text);
+}
+.sync-btn.ok {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sync-btn.pending,
+.sync-btn.offline {
+  color: var(--tone-warn);
+}
+.sync-btn.error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.sync-btn.syncing svg {
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+@keyframes pulse {
+  to {
+    opacity: 0.3;
+  }
 }
 
 @media (max-width: 720px) {
@@ -283,9 +306,11 @@ h4 {
   flex: none;
   position: relative;
 }
-.icon-btn:hover,
-.icon-btn.on {
+.icon-btn:hover {
   color: var(--text);
+}
+.icon-btn.on {
+  color: var(--accent);
 }
 .icon-btn.on::after {
   content: "";
@@ -474,6 +499,39 @@ select {
 .tracks li.active .track-title {
   font-weight: 650;
 }
+/* Modo de seleção (excluir em lote). */
+.tracks li.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.check-box {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--muted);
+  border-radius: 6px;
+  color: var(--accent-text);
+}
+.check-box.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.select-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 8px 0;
+}
+.chip.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: none;
+}
+.chip:disabled {
+  opacity: 0.5;
+}
 .track-main {
   flex: 1;
   min-width: 0;
@@ -517,10 +575,20 @@ select {
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   padding-bottom: 6px;
-  scrollbar-width: thin;
+  /* Sem barra de rolagem: passa com o dedo ou arrastando com o mouse. */
+  scrollbar-width: none;
+  cursor: grab;
+}
+.shelf::-webkit-scrollbar {
+  display: none;
+}
+.shelf.dragging {
+  cursor: grabbing;
+  scroll-snap-type: none;
+  user-select: none;
 }
 .shelf-item {
-  width: 132px;
+  width: 158px; /* 132px + 20% */
   flex: none;
   display: flex;
   flex-direction: column;
@@ -652,20 +720,146 @@ select {
   align-items: center;
   gap: 10px;
 }
-.link-import input {
+.link-field {
   flex: 1;
   min-width: 220px;
+  position: relative;
+  display: flex;
+}
+.link-import input {
+  flex: 1;
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px 12px;
   outline: none;
+  transition:
+    border-color 0.2s,
+    padding-left 0.2s;
 }
 .link-import input:focus {
   border-color: var(--text);
 }
+/* Link de um serviço (YouTube, Spotify): borda, ícone e botão na cor dele.
+   A classe fica no .link-import (e não no campo) para a cor chegar também ao botão. */
+.link-import.youtube {
+  --link-brand: var(--youtube);
+  --link-brand-text: #ffffff;
+}
+.link-import.spotify {
+  --link-brand: var(--spotify);
+  --link-brand-text: #000000; /* o Spotify usa texto preto sobre o verde */
+}
+.link-brand {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  display: grid;
+  color: var(--link-brand, var(--muted));
+  opacity: 0;
+  transform: translate(-6px, -50%);
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+  pointer-events: none;
+}
+.linked .link-brand {
+  opacity: 1;
+  transform: translate(0, -50%);
+}
+.linked .link-field input {
+  border-color: var(--link-brand);
+  padding-left: 40px;
+}
+.link-import .primary {
+  transition:
+    background-color 0.2s,
+    color 0.2s;
+}
+.linked .primary {
+  background: var(--link-brand);
+  color: var(--link-brand-text);
+}
 .link-import .err {
   color: var(--danger);
+}
+
+/* Fila da importação por link: clicar numa música faz ela ser ignorada. */
+.import-queue {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.import-queue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.import-queue li button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--muted);
+}
+.import-queue li button:hover {
+  background: var(--surface-2);
+  color: var(--danger);
+}
+.import-queue li button .track-title {
+  color: var(--text);
+}
+.import-queue li button.skipped {
+  opacity: 0.55;
+}
+.import-queue li button.skipped .track-title {
+  text-decoration: line-through;
+}
+.import-queue li button.skipped:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* Resumo da importação de playlist: o que falhou e a opção de tentar de novo. */
+.import-result {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.import-result p {
+  margin: 0;
+}
+.import-result .err {
+  color: var(--danger);
+}
+.import-result ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.import-result li {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.import-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .explain {
@@ -717,7 +911,7 @@ select {
 }
 .progress > div {
   height: 100%;
-  background: var(--text);
+  background: var(--accent);
   transition: width 0.2s;
 }
 
@@ -744,7 +938,7 @@ select {
 }
 .radio input {
   margin-top: 4px;
-  accent-color: var(--text);
+  accent-color: var(--accent);
 }
 .radio span {
   display: flex;
@@ -772,7 +966,7 @@ select {
   top: -1px;
   left: 0;
   height: 2px;
-  background: var(--text);
+  background: var(--accent);
 }
 .bar-info {
   flex: 1;
@@ -836,9 +1030,46 @@ select {
 .fp-meta p {
   margin: 0;
 }
+/* Barra de posição: pinta de lilás o trecho já tocado (--pct vem do Player). */
 .fp-seek input {
   width: 100%;
-  accent-color: var(--text);
+  height: 16px;
+  margin: 0;
+  background: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.fp-seek input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  background: linear-gradient(to right, var(--accent) var(--pct, 0%), var(--line) var(--pct, 0%));
+}
+.fp-seek input::-moz-range-track {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--line);
+}
+.fp-seek input::-moz-range-progress {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--accent);
+}
+.fp-seek input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--accent-text);
+}
+.fp-seek input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--accent-text);
 }
 .fp-times {
   display: flex;
@@ -858,9 +1089,11 @@ select {
 .fp-queue button {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  padding: 7px 0;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
   min-width: 0;
+  text-align: left;
 }
 
 /* ---------- Ficha da música ---------- */
@@ -1235,3 +1468,4 @@ select {
     display: none;
   }
 }
+.vinyl circle { transition: fill 0.4s; }

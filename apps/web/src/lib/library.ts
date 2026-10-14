@@ -15,7 +15,7 @@ import {
   type SyncPullResponse,
   type Track,
 } from "@yfitops/core";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { db, kvGet, kvSet } from "./db";
 import { createStore } from "./observable";
 import { getKeys, getSession } from "./session";
@@ -43,9 +43,27 @@ export interface Library {
   loaded: boolean;
   syncing: boolean;
   error: string | null;
+  /** Alterações feitas no aparelho que ainda não chegaram ao servidor. */
+  pending: number;
+  /** Sem conexão com o servidor (internet caiu ou servidor desligado): tudo segue salvo no aparelho. */
+  offline: boolean;
+  /** Quando o último sync completo deu certo. */
+  lastSync: number | null;
 }
 
-const empty: Library = { tracks: {}, playlists: {}, plays: {}, shared: [], sent: [], loaded: false, syncing: false, error: null };
+const empty: Library = {
+  tracks: {},
+  playlists: {},
+  plays: {},
+  shared: [],
+  sent: [],
+  loaded: false,
+  syncing: false,
+  error: null,
+  pending: 0,
+  offline: false,
+  lastSync: null,
+};
 export const libraryStore = createStore<Library>(empty);
 
 const KIND_KEY = { track: "tracks", playlist: "playlists", play: "plays" } as const;
@@ -71,7 +89,14 @@ export async function loadLocal() {
   next.shared = (await kvGet<SharedGroup[]>("shared")) ?? [];
   next.sent = (await kvGet<SentShare[]>("sent")) ?? [];
   next.loaded = true;
+  next.pending = await d.count("outbox");
   libraryStore.set(next);
+}
+
+/** Atualiza a contagem de alterações esperando envio. */
+async function refreshPending() {
+  const pending = await (await db()).count("outbox");
+  libraryStore.set((l) => ({ ...l, pending }));
 }
 
 export function resetLibrary() {
@@ -98,6 +123,7 @@ export async function saveItem<K extends ItemKind>(kind: K, id: string, value: I
   await tx.objectStore("items").put({ id, kind, value });
   await tx.objectStore("outbox").put({ id, kind, enc, deleted: false });
   await tx.done;
+  void refreshPending();
   scheduleSync();
 }
 
@@ -108,6 +134,7 @@ export async function deleteItem(kind: ItemKind, id: string) {
   await tx.objectStore("items").delete(id);
   await tx.objectStore("outbox").put({ id, kind, enc: null, deleted: true });
   await tx.done;
+  void refreshPending();
   scheduleSync();
 }
 
@@ -169,17 +196,31 @@ export function sync(): Promise<void> {
   return running;
 }
 
+/**
+ * Falha de conexão (sem internet, servidor desligado ou fora do ar), e não um erro de verdade.
+ * Um 500 sem corpo JSON também conta: é o proxy do Vite (em dev) avisando que a API não responde.
+ */
+const isOffline = (e: unknown) =>
+  e instanceof TypeError ||
+  (e instanceof ApiError && ([502, 503, 504].includes(e.status) || (e.status === 500 && e.message === "Erro 500")));
+
 async function doSync() {
-  if (!navigator.onLine) return;
+  if (!navigator.onLine) {
+    libraryStore.set((l) => ({ ...l, offline: true }));
+    return;
+  }
   libraryStore.set((l) => ({ ...l, syncing: true }));
   try {
     await push();
     await pull();
     await refreshShares();
-    libraryStore.set((l) => ({ ...l, error: null }));
+    libraryStore.set((l) => ({ ...l, error: null, offline: false, lastSync: Date.now() }));
   } catch (e) {
-    libraryStore.set((l) => ({ ...l, error: (e as Error).message }));
+    // Sem servidor: nada se perde, as alterações ficam na fila e vão na próxima tentativa.
+    if (isOffline(e)) libraryStore.set((l) => ({ ...l, offline: true, error: null }));
+    else libraryStore.set((l) => ({ ...l, offline: false, error: (e as Error).message }));
   } finally {
+    await refreshPending();
     libraryStore.set((l) => ({ ...l, syncing: false }));
   }
 }
@@ -256,9 +297,9 @@ async function refreshShares() {
       sent.push({ shareId: s.id, toEmail: s.toEmail, playlistName: "" });
     }
   }
-  // O nome do grupo enviado vem do ID: "<playlistId>.<destinatário>".
+  // O nome da playlist enviada vem do ID: "<playlistId>.<destinatário>".
   const lib = libraryStore.get();
-  for (const s of sent) s.playlistName = lib.playlists[s.shareId.split(".")[0]]?.name ?? "(grupo removido)";
+  for (const s of sent) s.playlistName = lib.playlists[s.shareId.split(".")[0]]?.name ?? "(playlist removida)";
   await kvSet("shared", shared);
   await kvSet("sent", sent);
   libraryStore.set((l) => ({ ...l, shared, sent }));
@@ -266,11 +307,11 @@ async function refreshShares() {
 
 const blobIdsOf = (t: Track) => [...Object.values(t.variants).map((v) => v!.id), ...(t.cover ? [t.cover.id] : [])];
 
-/** Compartilha um grupo (instantâneo). Repetir atualiza o conteúdo para a mesma pessoa. */
+/** Compartilha uma playlist (instantâneo). Repetir atualiza o conteúdo para a mesma pessoa. */
 export async function sharePlaylist(playlistId: string, email: string) {
   const lib = libraryStore.get();
   const playlist = lib.playlists[playlistId];
-  if (!playlist) throw new Error("Grupo não encontrado");
+  if (!playlist) throw new Error("Playlist não encontrada");
   const target = await api.json<{ userId: string; publicKey: string }>(`/users/lookup?email=${encodeURIComponent(email)}`);
   if (target.userId === getSession().userId) throw new Error("Esse é você 🙂");
   const tracks: Record<string, Track> = {};

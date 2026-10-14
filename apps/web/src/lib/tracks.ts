@@ -25,11 +25,39 @@ export async function deleteTrack(id: string) {
   const used = inUse(id);
   const refs = [...Object.values(t.variants), t.cover].filter(Boolean) as BlobRef[];
   await deleteItem("track", id);
-  // Remove dos grupos.
+  // Remove das playlists.
   for (const [pid, p] of Object.entries(libraryStore.get().playlists)) {
     if (p.trackIds.includes(id)) await saveItem("playlist", pid, { ...p, trackIds: p.trackIds.filter((x) => x !== id) });
   }
   for (const r of refs) if (!used.has(r.id)) await deleteBlob(r).catch(() => {});
+}
+
+/**
+ * Exclui várias músicas de uma vez: tira das playlists (cada playlist é salva uma vez
+ * só) e apaga da nuvem os arquivos que nenhuma faixa restante usa.
+ */
+export async function deleteTracks(ids: string[], onProgress?: (done: number, total: number) => void) {
+  const gone = new Set(ids.filter((id) => libraryStore.get().tracks[id]));
+  if (!gone.size) return;
+  const before = libraryStore.get().tracks;
+  const refs = [...gone].flatMap((id) => [...Object.values(before[id].variants), before[id].cover].filter(Boolean) as BlobRef[]);
+
+  for (const [pid, p] of Object.entries(libraryStore.get().playlists)) {
+    if (p.trackIds.some((x) => gone.has(x))) await saveItem("playlist", pid, { ...p, trackIds: p.trackIds.filter((x) => !gone.has(x)) });
+  }
+  let done = 0;
+  for (const id of gone) {
+    await deleteItem("track", id);
+    onProgress?.(++done, gone.size);
+  }
+  // Blobs ainda usados por faixas que ficaram (ex.: a mesma capa num álbum).
+  const used = inUse("");
+  const seen = new Set<string>();
+  for (const r of refs) {
+    if (used.has(r.id) || seen.has(r.id)) continue;
+    seen.add(r.id);
+    await deleteBlob(r).catch(() => {});
+  }
 }
 
 export async function setCover(id: string, image: File) {

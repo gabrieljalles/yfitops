@@ -44,7 +44,7 @@ export function GroupPage({ id }: { id: string }) {
   const lib = useStore(libraryStore);
   const p = lib.playlists[id];
   const [editing, setEditing] = useState(false);
-  if (!p) return <div className="page muted">Grupo não encontrado.</div>;
+  if (!p) return <div className="page muted">Playlist não encontrada.</div>;
   const sentTo = lib.sent.filter((s) => s.shareId.startsWith(`${id}.`));
 
   return (
@@ -53,8 +53,8 @@ export function GroupPage({ id }: { id: string }) {
         <button
           className="chip ghost"
           onClick={() => {
-            const email = prompt("E-mail de quem vai receber o grupo (precisa ter conta):");
-            if (email?.trim()) void attempt(() => sharePlaylist(id, email.trim()), "Grupo compartilhado");
+            const email = prompt("E-mail de quem vai receber a playlist (precisa ter conta):");
+            if (email?.trim()) void attempt(() => sharePlaylist(id, email.trim()), "Playlist compartilhada");
           }}
         >
           <Icon name="share" size={14} /> compartilhar
@@ -78,13 +78,13 @@ export function GroupPage({ id }: { id: string }) {
           <button
             className="link danger"
             onClick={() => {
-              if (confirm(`Apagar o grupo "${p.name}"? As músicas continuam na biblioteca.`)) {
+              if (confirm(`Apagar a playlist "${p.name}"? As músicas continuam na biblioteca.`)) {
                 navigate("/biblioteca");
-                void attempt(() => deleteItem("playlist", id), "Grupo apagado");
+                void attempt(() => deleteItem("playlist", id), "Playlist apagada");
               }
             }}
           >
-            Apagar grupo
+            Apagar playlist
           </button>
         </div>
       )}
@@ -102,7 +102,7 @@ export function GroupPage({ id }: { id: string }) {
           ))}
           <button
             className="link"
-            title="Envia a versão atual do grupo"
+            title="Envia a versão atual da playlist"
             onClick={() => attempt(async () => {
               for (const s of sentTo) await sharePlaylist(id, s.toEmail);
             }, "Compartilhamento atualizado")}
@@ -114,7 +114,7 @@ export function GroupPage({ id }: { id: string }) {
 
       <TrackList
         ids={p.trackIds}
-        empty="Grupo vazio. Adicione músicas pelo menu ⋯ de cada uma."
+        empty="Playlist vazia. Adicione músicas pelo menu ⋯ de cada uma."
         onRemove={editing ? (tid) => void removeFromPlaylist(id, tid) : undefined}
       />
     </div>
@@ -132,9 +132,9 @@ export function SharedGroupPage({ shareId }: { shareId: string }) {
         <button
           className="chip ghost"
           onClick={() => {
-            if (confirm("Sair deste grupo compartilhado?")) {
+            if (confirm("Sair desta playlist compartilhada?")) {
               navigate("/");
-              void attempt(() => unshare(shareId)).then(() => toast("Você saiu do grupo"));
+              void attempt(() => unshare(shareId)).then(() => toast("Você saiu da playlist"));
             }
           }}
         >

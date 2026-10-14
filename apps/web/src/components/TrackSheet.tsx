@@ -98,7 +98,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
       {!shared && (
         <>
           <section>
-            <h4>Grupos</h4>
+            <h4>Playlists</h4>
             <div className="chips">
               {groups.map(([pid, p]) => {
                 const inside = p.trackIds.includes(id);
@@ -111,11 +111,11 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
               <button
                 className="chip ghost"
                 onClick={() => {
-                  const name = prompt("Nome do novo grupo");
-                  if (name?.trim()) void attempt(() => createPlaylist(name.trim(), [id]), `Grupo ${name.trim()} criado`);
+                  const name = prompt("Nome da nova playlist");
+                  if (name?.trim()) void attempt(() => createPlaylist(name.trim(), [id]), `Playlist ${name.trim()} criada`);
                 }}
               >
-                <Icon name="plus" size={14} /> novo grupo
+                <Icon name="plus" size={14} /> nova playlist
               </button>
             </div>
           </section>

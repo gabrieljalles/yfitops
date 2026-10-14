@@ -26,6 +26,8 @@ export interface Track {
   /** "flac" = lossless; "orig" = original mantido sem reencode; "opus" = versão leve. */
   variants: Partial<Record<Variant, BlobRef>>;
   cover?: BlobRef;
+  /** De onde veio, quando importado de fora. Ex.: "youtube:dQw4w9WgXcQ". Evita baixar de novo. */
+  source?: string;
   addedAt: number;
 }
 
@@ -33,6 +35,8 @@ export interface Playlist {
   name: string;
   trackIds: string[];
   createdAt: number;
+  /** De onde veio, quando importada. Ex.: "youtube-playlist:PL...", "spotify-playlist:37i9...". */
+  source?: string;
 }
 
 export interface Play {

@@ -19,6 +19,7 @@ import { SearchPage } from "./pages/Search";
 import { SettingsPage } from "./pages/Settings";
 import { UploadPage } from "./pages/Upload";
 import { navigate, useRoute } from "./router";
+import { linkImportStore } from "./lib/linkImport";
 
 const NAV: [string, string, IconName][] = [
   ["", "Início", "home"],
@@ -76,7 +77,8 @@ export function App() {
             return <UploadPage />;
           case "ajustes":
             return <SettingsPage />;
-          case "grupo":
+          case "playlist":
+          case "grupo": // links antigos
             return <GroupPage id={parts[1]} />;
           case "compartilhado":
             return <SharedGroupPage shareId={parts[1]} />;
@@ -93,6 +95,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
   const lib = useStore(libraryStore);
   const jobs = useStore(jobsStore);
   const uploading = jobs.filter((j) => !["pronto", "já existe", "erro"].includes(j.status)).length;
+  const linkImport = useStore(linkImportStore);
 
   return (
     <div className={`app${player.index >= 0 ? " has-player" : ""}`}>
@@ -102,11 +105,16 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
           <button key={path} className={section === path ? "on" : ""} onClick={() => navigate(`/${path}`)}>
             <Icon name={icon} />
             <span>{label}</span>
-            {path === "enviar" && uploading > 0 && <span className="dot">{uploading}</span>}
+            {path === "enviar" && (uploading > 0 || linkImport.busy) && (
+              // Importando por link: o ponto aparece mesmo antes de a 1ª música entrar na fila.
+              <span className="dot" title={linkImport.note || undefined}>
+                {uploading || "…"}
+              </span>
+            )}
           </button>
         ))}
         <div className="sync-state muted small" title={lib.error ?? ""}>
-          {!navigator.onLine ? "offline" : lib.syncing ? "sincronizando…" : lib.error ? "erro no sync" : ""}
+          {lib.offline ? "offline" : lib.syncing ? "sincronizando…" : lib.error ? "erro no sync" : ""}
         </div>
       </nav>
       <main className="content">
@@ -128,7 +136,7 @@ function Brand({ playing }: { playing: boolean }) {
   return (
     <div className="brand">
       <span className={`brand-disc${playing ? " playing" : ""}`}>
-        <Vinyl seed="" mini label="var(--brand)" spinning />
+        <Vinyl seed="" mini label="var(--brand)" groove="#ffffff" spinning />
       </span>
       yfitops
     </div>

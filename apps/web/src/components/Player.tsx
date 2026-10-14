@@ -74,6 +74,7 @@ export function FullPlayer() {
             step={0.5}
             value={Math.min(p.time, p.duration || 0)}
             onChange={(e) => seek(Number(e.target.value))}
+            style={{ "--pct": `${p.duration ? (Math.min(p.time, p.duration) / p.duration) * 100 : 0}%` } as React.CSSProperties}
             aria-label="Posição"
           />
           <div className="fp-times muted small">
@@ -109,8 +110,11 @@ export function FullPlayer() {
                   t && (
                     <li key={`${qid}-${i}`}>
                       <button onClick={() => jumpTo(p.index + 1 + i)}>
-                        <span className="track-title">{t.title}</span>
-                        <span className="track-sub">{t.artist}</span>
+                        <Cover cover={t.cover} seed={t.title + t.artist} size={40} />
+                        <span className="track-text">
+                          <span className="track-title">{t.title}</span>
+                          <span className="track-sub">{t.artist}</span>
+                        </span>
                       </button>
                     </li>
                   )

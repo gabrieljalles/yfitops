@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { BlobRef } from "@yfitops/core";
 import { coverUrl } from "../lib/blobs";
+import { dominantColor } from "../lib/color";
 
 function hue(seed: string): number {
   let h = 0;
@@ -13,12 +14,15 @@ export function Vinyl({
   seed,
   spinning,
   label,
+  groove,
   mini,
 }: {
   seed: string;
   spinning?: boolean;
   /** Cor do rótulo (aceita var(--…)); padrão: derivada do nome. */
   label?: string;
+  /** Cor dos sulcos (aceita var(--…)); padrão: --vinyl-groove. */
+  groove?: string;
   /** Versão de ícone: menos sulcos e rótulo maior, para a cor aparecer em tamanhos pequenos. */
   mini?: boolean;
 }) {
@@ -27,7 +31,7 @@ export function Vinyl({
     <svg viewBox="0 0 100 100" className={`vinyl${spinning ? " spin" : ""}`} aria-hidden="true">
       <circle cx="50" cy="50" r="49" fill="var(--vinyl)" />
       {(mini ? [40] : [42, 37, 32, 27]).map((r) => (
-        <circle key={r} cx="50" cy="50" r={r} fill="none" stroke="var(--vinyl-groove)" strokeWidth="0.6" />
+        <circle key={r} cx="50" cy="50" r={r} fill="none" style={{ stroke: groove ?? "var(--vinyl-groove)" }} strokeWidth="0.6" />
       ))}
       <path d="M50 8 A42 42 0 0 1 86 30" fill="none" stroke="var(--vinyl-shine)" strokeWidth="2" strokeLinecap="round" />
       {/* style (e não o atributo fill), pois atributos de SVG não resolvem var(--…) */}
@@ -54,6 +58,7 @@ export function Cover({
   className?: string;
 }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [tint, setTint] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     setSrc(null);
@@ -62,6 +67,15 @@ export function Cover({
       alive = false;
     };
   }, [cover?.id]);
+  // Com capa, o rótulo do vinil que sai dela ganha a cor predominante da capa.
+  useEffect(() => {
+    let alive = true;
+    setTint(null);
+    if (sleeve && src && cover) dominantColor(cover.id, src).then((c) => alive && setTint(c));
+    return () => {
+      alive = false;
+    };
+  }, [sleeve, src, cover?.id]);
   if (sleeve && src) {
     return (
       <div
@@ -69,7 +83,7 @@ export function Cover({
         style={size ? ({ width: size, height: size, "--s": `${size}px` } as React.CSSProperties) : undefined}
       >
         <div className="sleeve-disc">
-          <Vinyl seed={seed} spinning />
+          <Vinyl seed={seed} label={tint ?? undefined} spinning />
         </div>
         <div className="cover">
           <img src={src} alt="" />

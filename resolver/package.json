@@ -7,8 +7,5 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs"
-  },
-  "dependencies": {
-    "yt-dlp-wrap": "^2.3.12"
   }
 }

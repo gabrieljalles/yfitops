@@ -1,14 +1,17 @@
 import { musicas } from "../lib/tracks";
 import { Cover } from "../components/Cover";
 import { Icon } from "../components/Icon";
+import { SyncButton } from "../components/SyncButton";
 import { createPlaylist, getTrackFrom, libraryStore, recentTrackIds } from "../lib/library";
 import { useStore } from "../lib/observable";
 import { playList } from "../lib/player";
 import { attempt } from "../lib/ui";
+import { useDragScroll } from "../lib/dragScroll";
 import { navigate } from "../router";
 
 export function HomePage() {
   const lib = useStore(libraryStore);
+  const shelf = useDragScroll<HTMLDivElement>();
   const recent = recentTrackIds(lib, 20);
   const groups = Object.entries(lib.playlists).sort((a, b) => b[1].createdAt - a[1].createdAt);
   const total = Object.keys(lib.tracks).length;
@@ -28,9 +31,12 @@ export function HomePage() {
   return (
     <div className="page">
       <section>
-        <h2>Tocadas recentemente</h2>
+        <div className="section-head">
+          <h2>Tocadas recentemente</h2>
+          <SyncButton />
+        </div>
         {recent.length ? (
-          <div className="shelf">
+          <div className="shelf" {...shelf}>
             {recent.map((id, i) => {
               const t = getTrackFrom(lib, id)!;
               return (
@@ -49,20 +55,20 @@ export function HomePage() {
 
       <section>
         <div className="section-head">
-          <h2>Grupos</h2>
+          <h2>Playlists</h2>
           <button
             className="chip ghost"
             onClick={() => {
-              const name = prompt("Nome do grupo");
-              if (name?.trim()) void attempt(async () => navigate(`/grupo/${await createPlaylist(name.trim())}`));
+              const name = prompt("Nome da playlist");
+              if (name?.trim()) void attempt(async () => navigate(`/playlist/${await createPlaylist(name.trim())}`));
             }}
           >
             <Icon name="plus" size={14} /> novo
           </button>
         </div>
         <GroupGrid
-          items={groups.map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/grupo/${id}` }))}
-          empty="Crie grupos para juntar músicas do jeito que quiser."
+          items={groups.map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/playlist/${id}` }))}
+          empty="Crie playlists para juntar músicas do jeito que quiser. Ao importar uma playlist, ela aparece aqui sozinha."
         />
       </section>
 

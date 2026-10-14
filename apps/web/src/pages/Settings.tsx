@@ -46,7 +46,7 @@ export function SettingsPage() {
           </>
         )}
         <p className="muted small">
-          {lib.syncing ? "sincronizando…" : lib.error ? `Erro no sync: ${lib.error}` : "Sincronizado"}{" "}
+          {lib.syncing ? "sincronizando…" : lib.offline ? "Offline: as alterações ficam no aparelho até o servidor voltar" : lib.error ? `Erro no sync: ${lib.error}` : "Sincronizado"}{" "}
           <button className="link" onClick={() => void sync()}>
             sincronizar agora
           </button>
@@ -82,7 +82,7 @@ export function SettingsPage() {
 
       <section>
         <h2>Downloads offline</h2>
-        <p className="muted small">Qualidade sugerida ao baixar. Você também escolhe na hora, em cada música ou grupo.</p>
+        <p className="muted small">Qualidade sugerida ao baixar. Você também escolhe na hora, em cada música ou playlist.</p>
         {(
           [
             ["normal", "Normal", "Opus 160 kbps: transparente ao ouvido, ~6× menor"],
