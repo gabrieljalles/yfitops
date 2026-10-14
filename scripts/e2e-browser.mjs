@@ -39,8 +39,11 @@ const page = await ctx.newPage();
 const logs = [];
 page.on("console", (m) => (m.type() === "error" || m.type() === "warning") && logs.push(`[${m.type()}] ${m.text()}`));
 page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
-let promptAnswer = "Estudo";
-page.on("dialog", (d) => d.accept(d.type() === "prompt" ? promptAnswer : undefined));
+// Responde o diálogo do próprio app (o que substituiu o prompt() do navegador).
+const answerDialog = async (p, text) => {
+  await p.locator(".dialog-input").fill(text);
+  await p.locator(".dialog-actions .primary").click();
+};
 // Espera as animações de entrada terminarem antes da captura.
 const shot = async (name) => (await page.waitForTimeout(700), page.screenshot({ path: join(OUT, `${name}.png`) }));
 const step = (s) => console.log("→", s);
@@ -101,7 +104,8 @@ try {
   await page.getByPlaceholder("adicionar tag…").fill("acustico");
   await page.getByPlaceholder("adicionar tag…").press("Enter");
   await page.locator(".chip.on", { hasText: "#acustico" }).waitFor();
-  await page.getByRole("button", { name: "novo grupo" }).click();
+  await page.getByRole("button", { name: "nova playlist" }).click();
+  await answerDialog(page, "Estudo");
   await page.locator(".chip.on", { hasText: "Estudo" }).waitFor();
   await page.locator('.sheet input[type="file"]').setInputFiles(COVER);
   await page.locator(".sheet .cover img").waitFor({ timeout: 20000 });
@@ -186,8 +190,8 @@ try {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(URL + "#/");
   await page.locator(".grid-item", { hasText: "Estudo" }).click();
-  promptAnswer = emailB;
   await page.getByRole("button", { name: /compartilhar/ }).click();
+  await answerDialog(page, emailB);
   await page.getByText(emailB).waitFor({ timeout: 20000 });
   await p3.reload();
   await p3.getByText("Compartilhados com você").waitFor({ timeout: 30000 });

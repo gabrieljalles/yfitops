@@ -1,8 +1,9 @@
-import { deleteTracks, musicas } from "../lib/tracks";
-import { useMemo, useState } from "react";
+import { deleteTracks, musicas, setFavorite } from "../lib/tracks";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
-import { createPlaylist, libraryStore } from "../lib/library";
+import { confirmDialog, promptDialog } from "../lib/dialog";
+import { addToPlaylist, createPlaylist, favoriteIds, libraryStore } from "../lib/library";
 import { useStore } from "../lib/observable";
 import { playList } from "../lib/player";
 import { allTags } from "../lib/search";
@@ -20,6 +21,8 @@ export function LibraryPage() {
   /** null = fora do modo de seleção. */
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const [deleting, setDeleting] = useState("");
+  /** Escolhendo a playlist que recebe as selecionadas. */
+  const [picking, setPicking] = useState(false);
 
   const ids = useMemo(() => {
     const e = Object.entries(lib.tracks);
@@ -31,6 +34,8 @@ export function LibraryPage() {
     }[sort];
     return e.sort(cmp).map(([id]) => id);
   }, [lib.tracks, sort]);
+
+  const favorites = useMemo(() => favoriteIds(lib), [lib.tracks]);
 
   const tags = useMemo(() => {
     const tracks = Object.values(lib.tracks);
@@ -45,11 +50,30 @@ export function LibraryPage() {
       return next;
     });
   const allSelected = !!selected && ids.length > 0 && ids.every((id) => selected.has(id));
+  /** Todas as selecionadas já são favoritas: o botão vira "desfavoritar". */
+  const allFavorite = !!selected?.size && [...selected].every((id) => lib.tracks[id]?.favoriteAt);
+
+  async function favoriteSelected() {
+    if (!selected?.size) return;
+    const on = !allFavorite;
+    const n = selected.size;
+    await attempt(
+      () => setFavorite([...selected], on),
+      on ? `${musicas(n)} nas favoritas` : `${musicas(n)} fora das favoritas`,
+    );
+    setSelected(null);
+  }
 
   async function removeSelected() {
     if (!selected?.size) return;
     const n = selected.size;
-    if (!confirm(`Excluir ${musicas(n)} da nuvem? Isso não pode ser desfeito.`)) return;
+    const ok = await confirmDialog({
+      title: n === 1 ? "Excluir música?" : `Excluir ${n} músicas?`,
+      message: `${n === 1 ? "Ela será apagada" : "Elas serão apagadas"} da nuvem e de todos os aparelhos. Isso não pode ser desfeito.`,
+      confirm: "excluir",
+      danger: true,
+    });
+    if (!ok) return;
     setDeleting(`excluindo 0 de ${n}...`);
     await attempt(async () => {
       await deleteTracks([...selected], (done, total) => setDeleting(`excluindo ${done} de ${total}...`));
@@ -85,6 +109,12 @@ export function LibraryPage() {
               <div className="row wrap">
                 <button className="chip ghost" disabled={!!deleting} onClick={() => setSelected(allSelected ? new Set() : new Set(ids))}>
                   {allSelected ? "desmarcar todas" : "selecionar todas"}
+                </button>
+                <button className="chip" disabled={!selected.size || !!deleting} onClick={() => setPicking(true)}>
+                  <Icon name="plus" size={14} /> adicionar à playlist
+                </button>
+                <button className="chip" disabled={!selected.size || !!deleting} onClick={() => void favoriteSelected()}>
+                  <Icon name={allFavorite ? "heart" : "heartFilled"} size={14} /> {allFavorite ? "desfavoritar" : "favoritar"}
                 </button>
                 <button className="chip danger" disabled={!selected.size || !!deleting} onClick={() => void removeSelected()}>
                   <Icon name="trash" size={14} /> {deleting || "excluir"}
@@ -122,6 +152,16 @@ export function LibraryPage() {
             selected={selected ?? undefined}
             onToggle={deleting ? undefined : toggle}
           />
+          {picking && selected && (
+            <PlaylistPicker
+              ids={[...selected]}
+              onClose={() => setPicking(false)}
+              onDone={() => {
+                setPicking(false);
+                setSelected(null);
+              }}
+            />
+          )}
         </>
       )}
 
@@ -131,18 +171,23 @@ export function LibraryPage() {
             <span />
             <button
               className="chip ghost"
-              onClick={() => {
-                const name = prompt("Nome da playlist");
-                if (name?.trim()) void attempt(async () => navigate(`/playlist/${await createPlaylist(name.trim())}`));
+              onClick={async () => {
+                const name = await promptDialog({ title: "Nova playlist", input: { placeholder: "Nome da playlist" }, confirm: "criar" });
+                if (name) void attempt(async () => navigate(`/playlist/${await createPlaylist(name)}`));
               }}
             >
               <Icon name="plus" size={14} /> nova playlist
             </button>
           </div>
           <GroupGrid
-            items={Object.entries(lib.playlists)
-              .sort((a, b) => a[1].name.localeCompare(b[1].name))
-              .map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/playlist/${id}` }))}
+            items={[
+              ...(favorites.length
+                ? [{ key: "favoritas", name: "Favoritas", sub: musicas(favorites.length), trackIds: favorites, href: "/favoritas" }]
+                : []),
+              ...Object.entries(lib.playlists)
+                .sort((a, b) => a[1].name.localeCompare(b[1].name))
+                .map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/playlist/${id}` })),
+            ]}
             empty="Nenhuma playlist ainda."
           />
         </>
@@ -163,6 +208,92 @@ export function LibraryPage() {
         ) : (
           <p className="muted empty">Adicione tags pelo menu ⋯ de cada música.</p>
         ))}
+    </div>
+  );
+}
+
+/**
+ * Escolhe a playlist que recebe as músicas selecionadas (ou cria uma nova com
+ * elas). As que já estão na playlist não entram de novo.
+ */
+function PlaylistPicker({ ids, onClose, onDone }: { ids: string[]; onClose: () => void; onDone: () => void }) {
+  const lib = useStore(libraryStore);
+  const [busy, setBusy] = useState(false);
+  const playlists = Object.entries(lib.playlists).sort((a, b) => a[1].name.localeCompare(b[1].name));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function addTo(pid: string, name: string, added: number) {
+    setBusy(true);
+    // `attempt` já mostra o erro; true só se deu certo.
+    const ok = await attempt(async () => {
+      await addToPlaylist(pid, ids);
+      return true;
+    });
+    setBusy(false);
+    if (!ok) return;
+    toast(`${musicas(added)} ${added === 1 ? "adicionada" : "adicionadas"} a ${name}`);
+    onDone();
+  }
+
+  async function createWith() {
+    onClose();
+    const name = await promptDialog({
+      title: "Nova playlist",
+      message: `Com ${musicas(ids.length)} ${ids.length === 1 ? "selecionada" : "selecionadas"}.`,
+      input: { placeholder: "Nome da playlist" },
+      confirm: "criar",
+    });
+    if (!name) return;
+    const pid = await attempt(() => createPlaylist(name, ids), `Playlist ${name} criada`);
+    if (pid) onDone();
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="pick-title" onClick={(e) => e.stopPropagation()}>
+        <h3 id="pick-title">Adicionar {musicas(ids.length)} à playlist</h3>
+        <ul className="pick-list">
+          {playlists.map(([pid, p]) => {
+            const inside = new Set(p.trackIds);
+            const added = ids.filter((id) => !inside.has(id)).length;
+            return (
+              <li key={pid}>
+                <button disabled={busy || added === 0} onClick={() => void addTo(pid, p.name, added)}>
+                  <span className="pick-name">{p.name}</span>
+                  <span className="muted small">
+                    {added === 0 ? (
+                      <>
+                        <Icon name="check" size={12} /> já tem todas
+                      </>
+                    ) : added < ids.length ? (
+                      `+${added} (${ids.length - added} já estão)`
+                    ) : (
+                      musicas(p.trackIds.length)
+                    )}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+          <li>
+            <button disabled={busy} onClick={() => void createWith()}>
+              <span className="pick-name">
+                <Icon name="plus" size={14} /> nova playlist
+              </span>
+            </button>
+          </li>
+        </ul>
+        <div className="dialog-actions">
+          <button className="chip ghost" onClick={onClose}>
+            cancelar
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -175,6 +175,56 @@ export function recentTrackIds(lib: Library, limit = 30): string[] {
   return out;
 }
 
+/** Favoritas, da marcada mais recentemente para a mais antiga. */
+export function favoriteIds(lib: Library): string[] {
+  return Object.entries(lib.tracks)
+    .filter(([, t]) => t.favoriteAt)
+    .sort((a, b) => b[1].favoriteAt! - a[1].favoriteAt!)
+    .map(([id]) => id);
+}
+
+/** Mais tocadas no histórico guardado (pelo menos 2 vezes), da mais para a menos tocada. */
+export function mostPlayedIds(lib: Library, limit = 20): string[] {
+  const count = new Map<string, { n: number; last: number }>();
+  for (const p of Object.values(lib.plays)) {
+    const c = count.get(p.trackId) ?? { n: 0, last: 0 };
+    count.set(p.trackId, { n: c.n + 1, last: Math.max(c.last, p.at) });
+  }
+  return [...count.entries()]
+    .filter(([id, c]) => c.n >= 2 && getTrackFrom(lib, id))
+    .sort((a, b) => b[1].n - a[1].n || b[1].last - a[1].last)
+    .slice(0, limit)
+    .map(([id]) => id);
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Número estável por dia para cada id: as "esquecidas" mudam de um dia para o outro, não a cada tela. */
+function dailyRank(id: string): number {
+  const seed = `${id}:${Math.floor(Date.now() / DAY)}`;
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/**
+ * Esquecidas: não tocadas há mais de 30 dias, ou nunca tocadas e na biblioteca
+ * há mais de 14 dias. Uma seleção diferente a cada dia.
+ */
+export function forgottenIds(lib: Library, limit = 20): string[] {
+  const last = new Map<string, number>();
+  for (const p of Object.values(lib.plays)) last.set(p.trackId, Math.max(last.get(p.trackId) ?? 0, p.at));
+  const now = Date.now();
+  return Object.entries(lib.tracks)
+    .filter(([id, t]) => {
+      const l = last.get(id);
+      return l ? l < now - 30 * DAY : t.addedAt < now - 14 * DAY;
+    })
+    .map(([id]) => id)
+    .sort((a, b) => dailyRank(a) - dailyRank(b))
+    .slice(0, limit);
+}
+
 export function getTrackFrom(lib: Library, id: string): Track | undefined {
   if (!id.startsWith("s~")) return lib.tracks[id];
   const [, shareId, trackId] = id.split("~");

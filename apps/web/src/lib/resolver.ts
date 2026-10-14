@@ -1,5 +1,7 @@
+import { artistFromChannel, splitArtistTitle } from "./artist";
 import { ACCEPTED_EXT, enqueue, trackIdBySource } from "./importer";
 import { createPlaylist, libraryStore, saveItem } from "./library";
+import { mergeTags } from "./search";
 
 // ---------------------------------------------------------------------------
 // Importar playlist do YouTube e do Spotify.
@@ -46,28 +48,69 @@ export function isSpotifyLink(text: string): boolean {
   }
 }
 
-/** Aceita YouTube ou Spotify (habilita o botão de importar). */
-export function isImportLink(text: string): boolean {
-  return isYouTubeLink(text) || isSpotifyLink(text);
+/**
+ * Link do YouTube que aponta para um vídeo DENTRO de uma lista (watch?v=X&list=Y),
+ * o que acontece ao abrir uma música a partir de um mix ou playlist. Devolve o
+ * link só do vídeo e se a lista é um mix (gerado pelo YouTube, "RD..."); senão, null.
+ */
+export function videoInList(text: string): { single: string; mix: boolean } | null {
+  if (!isYouTubeLink(text)) return null;
+  try {
+    const u = new URL(text.trim());
+    // youtu.be/<id>?list=... traz o vídeo no caminho, não no ?v=.
+    const v = /(^|\.)youtu\.be$/i.test(u.hostname) ? u.pathname.slice(1) : u.searchParams.get("v");
+    const list = u.searchParams.get("list");
+    if (!v || !list) return null;
+    return { single: `https://www.youtube.com/watch?v=${v}`, mix: list.startsWith("RD") };
+  } catch {
+    return null;
+  }
 }
+
+/** O texto é um link do Deezer (incluindo os curtos, deezer.page.link etc.)? */
+export function isDeezerLink(text: string): boolean {
+  try {
+    return /(^|\.)(deezer\.com|deezer\.page\.link|dzr\.page\.link)$/i.test(
+      new URL(text.trim()).hostname,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Aceita YouTube, Spotify ou Deezer (habilita o botão de importar). */
+export function isImportLink(text: string): boolean {
+  return isYouTubeLink(text) || isSpotifyLink(text) || isDeezerLink(text);
+}
+
+/** Nome do serviço para mostrar ("Playlist do Deezer"). */
+const PROVIDER_NAMES: Record<string, string> = {
+  youtube: "YouTube",
+  spotify: "Spotify",
+  deezer: "Deezer",
+};
 
 export interface ResolvedTrack {
   videoId: string;
   title: string;
   artist: string;
   duration: number;
-  /** Só nas faixas do Spotify, enquanto ainda não foram buscadas no YouTube. */
+  /** Só nas faixas do Spotify/Deezer, enquanto ainda não foram buscadas no YouTube. */
   query?: string;
   album?: string;
   cover?: string;
   spotifyId?: string;
+  deezerId?: string;
 }
 
 export interface ResolvedStream {
   videoId: string;
   streamUrl: string;
   title: string;
+  /** Só quando o YouTube tem o metadado de música; senão "". */
   artist: string;
+  /** Canal que publicou (nem sempre é o artista). */
+  channel?: string;
 }
 
 /**
@@ -82,6 +125,13 @@ export class ResolverError extends Error {
     public retryable: boolean,
   ) {
     super(message);
+  }
+}
+
+/** A pessoa cancelou a importação antes de qualquer download começar. */
+export class ImportCancelled extends Error {
+  constructor() {
+    super("Importação cancelada");
   }
 }
 
@@ -140,6 +190,8 @@ interface Listing {
   /** ID da playlist na origem; null para vídeo/faixa solta. */
   playlist: string | null;
   name: string | null;
+  /** O Spotify sem credenciais só entrega as 50 primeiras: a lista pode estar cortada. */
+  truncated: boolean;
 }
 
 /** Lista as músicas de uma playlist, ou o vídeo solto (rápido, não baixa áudio ainda). */
@@ -151,6 +203,7 @@ export function listPlaylist(url: string): Promise<Listing> {
     provider: r.provider ?? "youtube",
     playlist: r.playlist ?? null,
     name: r.name ?? null,
+    truncated: r.truncated ?? false,
   }));
 }
 
@@ -178,33 +231,86 @@ export interface PlaylistResult {
   failed: { track: ResolvedTrack; reason: string }[];
   /** Músicas que a pessoa pediu para ignorar durante a importação. */
   skipped: ResolvedTrack[];
+  /** Só as primeiras músicas da playlist foram lidas (limite de 50 do Spotify). */
+  truncated?: boolean;
+  /** Tags escolhidas na importação (o "tentar de novo" usa as mesmas). */
+  tags?: string[];
   /** Playlist do app que recebeu as músicas (quando o link era de uma playlist). */
   playlist?: { id: string; name: string; source: string; tracks: ResolvedTrack[] };
 }
 
 /** Id da faixa no app para uma faixa da origem (depois de importada ou se já existia). */
 const appTrackId = (t: ResolvedTrack) =>
-  t.videoId ? trackIdBySource(`youtube:${t.videoId}`) : undefined;
+  (t.videoId ? trackIdBySource(`youtube:${t.videoId}`) : undefined) ?? trackIdByCatalog(catalogKey(t));
+
+/** Origem da faixa no catálogo ("spotify:<id>", "deezer:<id>"); undefined para vídeos do YouTube. */
+const catalogKey = (t: ResolvedTrack) =>
+  t.spotifyId ? `spotify:${t.spotifyId}` : t.deezerId ? `deezer:${t.deezerId}` : undefined;
+
+/** Faixa da biblioteca que já veio dessa origem do catálogo (sem precisar procurar no YouTube). */
+function trackIdByCatalog(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  const tracks = libraryStore.get().tracks;
+  return Object.keys(tracks).find((id) => tracks[id].alsoFrom?.includes(key));
+}
+
+/**
+ * Atualiza uma faixa que já estava na biblioteca: recebe as tags escolhidas e
+ * passa a lembrar a origem no catálogo (da próxima vez, nem procura no YouTube).
+ */
+async function touchExisting(id: string, tags: string[] | undefined, key: string | undefined) {
+  const t = libraryStore.get().tracks[id];
+  if (!t) return;
+  const merged = mergeTags(t.tags, tags);
+  const alsoFrom = key && !t.alsoFrom?.includes(key) ? [...(t.alsoFrom ?? []), key] : t.alsoFrom;
+  if (merged !== t.tags || alsoFrom !== t.alsoFrom) await saveItem("track", id, { ...t, tags: merged, alsoFrom });
+}
+
+/**
+ * Link para ler de novo uma playlist importada (para "sincronizar"). Usa o link
+ * guardado; nas importadas antes de guardarmos o link, monta pela origem.
+ */
+export function playlistSyncUrl(p: { source?: string; sourceUrl?: string }): string | undefined {
+  if (p.sourceUrl) return p.sourceUrl;
+  const m = p.source?.match(/^(youtube|spotify|deezer)-playlist:(.+)$/);
+  if (!m) return undefined;
+  const [, provider, id] = m;
+  if (provider === "spotify") return `https://open.spotify.com/playlist/${id}`;
+  if (provider === "deezer") {
+    const [type, num] = id.split("-");
+    return `https://www.deezer.com/${type}/${num}`;
+  }
+  // Mix do YouTube ("RD" + vídeo) só abre pelo endereço do vídeo.
+  return /^RD[\w-]{11}$/.test(id)
+    ? `https://www.youtube.com/watch?v=${id.slice(2)}&list=${id}`
+    : `https://www.youtube.com/playlist?list=${id}`;
+}
 
 /**
  * Cria (ou atualiza, se já foi importada antes) a playlist do app ligada à
  * playlist de origem, com as músicas na ordem original. Músicas que a pessoa
  * adicionou à mão na playlist do app continuam lá, no fim.
  */
-async function linkPlaylist(source: string, name: string, tracks: ResolvedTrack[]): Promise<string | undefined> {
+async function linkPlaylist(
+  source: string,
+  name: string,
+  tracks: ResolvedTrack[],
+  sourceUrl?: string,
+): Promise<string | undefined> {
   const ids = [...new Set(tracks.map(appTrackId).filter((x): x is string => !!x))];
   const playlists = libraryStore.get().playlists;
   const found = Object.entries(playlists).find(([, p]) => p.source === source);
+  const syncedAt = Date.now();
   if (found) {
     const [pid, p] = found;
     const extra = p.trackIds.filter((x) => !ids.includes(x));
-    await saveItem("playlist", pid, { ...p, trackIds: [...ids, ...extra] });
+    await saveItem("playlist", pid, { ...p, trackIds: [...ids, ...extra], sourceUrl: sourceUrl ?? p.sourceUrl, syncedAt });
     return pid;
   }
   if (!ids.length) return undefined;
   const pid = await createPlaylist(name, ids);
   const created = libraryStore.get().playlists[pid];
-  await saveItem("playlist", pid, { ...created, source });
+  await saveItem("playlist", pid, { ...created, source, ...(sourceUrl && { sourceUrl }), syncedAt });
   return pid;
 }
 
@@ -229,6 +335,15 @@ export interface ImportControl {
   onProgress?: (index: number) => void;
   /** A pessoa pediu para ignorar essa faixa? */
   isSkipped?: (t: ResolvedTrack) => boolean;
+  /**
+   * Pergunta, antes de baixar, se as músicas da playlist devem ficar ligadas a
+   * uma playlist do app (true) ou entrar soltas (false). Sem isso, liga.
+   */
+  askLink?: (playlist: { name: string; count: number; truncated: boolean }) => Promise<boolean | null>;
+  /** A pessoa cancelou antes de começar a baixar? (o null do askLink também cancela) */
+  isCancelled?: () => boolean;
+  /** Tags aplicadas a todas as músicas (às novas e às que já estavam na biblioteca). */
+  tags?: string[];
 }
 
 export async function importPlaylist(
@@ -237,22 +352,33 @@ export async function importPlaylist(
   control?: ImportControl,
 ): Promise<PlaylistResult> {
   onNote?.("lendo o link...");
-  const { tracks, provider, playlist, name } = await listPlaylist(url);
+  const { tracks, provider, playlist, name, truncated } = await listPlaylist(url);
+  // Cancelada enquanto lia o link: para antes de baixar qualquer coisa.
+  if (control?.isCancelled?.()) throw new ImportCancelled();
   if (!tracks.length) throw new Error("Essa playlist está vazia");
-  if (provider === "spotify")
+  const service = PROVIDER_NAMES[provider] ?? "YouTube";
+  const title = name || `Playlist do ${service}`;
+  // Com uma música só, nunca liga: não vale criar uma playlist de uma música.
+  let link = false;
+  if (playlist && tracks.length > 1) {
+    const answer = await (control?.askLink?.({ name: title, count: tracks.length, truncated }) ?? true);
+    if (answer === null) throw new ImportCancelled();
+    link = answer;
+  }
+  if (provider !== "youtube")
     onNote?.(
-      "lendo a playlist do Spotify... vou procurar cada música no YouTube.",
+      `lendo a playlist do ${service}... vou procurar cada música no YouTube.`,
     );
   const result = await importTracks(tracks, onNote, control);
-  if (!playlist) return result;
+  if (truncated) result.truncated = true;
+  if (!link) return result;
 
   // Era uma playlist: todas as músicas (novas e as que já existiam) entram
   // numa playlist do app com o mesmo nome, sem a pessoa precisar montar.
   const source = `${provider}-playlist:${playlist}`;
-  const title = name || `Playlist do ${provider === "spotify" ? "Spotify" : "YouTube"}`;
   // As ignoradas ficam de fora (e continuam de fora ao tentar de novo).
   const kept = tracks.filter((t) => !result.skipped.includes(t));
-  const id = await linkPlaylist(source, title, kept);
+  const id = await linkPlaylist(source, title, kept, url);
   if (id) result.playlist = { id, name: libraryStore.get().playlists[id]?.name ?? title, source, tracks: kept };
   return result;
 }
@@ -266,7 +392,8 @@ export async function retryFailed(
   onNote?: (note: string) => void,
   control?: ImportControl,
 ): Promise<PlaylistResult> {
-  const result = await importTracks(prev.failed.map((f) => f.track), onNote, control);
+  const result = await importTracks(prev.failed.map((f) => f.track), onNote, { ...control, tags: prev.tags });
+  if (prev.truncated) result.truncated = true;
   if (prev.playlist) {
     const { source, name } = prev.playlist;
     const tracks = prev.playlist.tracks.filter((t) => !result.skipped.includes(t));
@@ -287,7 +414,8 @@ export async function importTracks(
   onNote?: (note: string) => void,
   control?: ImportControl,
 ): Promise<PlaylistResult> {
-  const result: PlaylistResult = { imported: [], existing: [], failed: [], skipped: [] };
+  const tags = control?.tags?.length ? control.tags : undefined;
+  const result: PlaylistResult = { imported: [], existing: [], failed: [], skipped: [], tags };
   const skipped = (t: ResolvedTrack) => control?.isSkipped?.(t) ?? false;
   control?.onList?.(tracks);
   const pending: Promise<void>[] = [];
@@ -306,7 +434,17 @@ export async function importTracks(
       continue;
     }
 
-    // Faixa do Spotify: ainda não tem videoId. Procura "artista - música" no
+    // Já veio desse Spotify/Deezer antes (ex.: ao sincronizar uma playlist):
+    // não procura de novo no YouTube, nem baixa. Só recebe as tags.
+    const key = catalogKey(t);
+    const fromCatalog = trackIdByCatalog(key);
+    if (fromCatalog) {
+      if (tags) await touchExisting(fromCatalog, tags, undefined);
+      result.existing.push(t);
+      continue;
+    }
+
+    // Faixa do Spotify/Deezer: ainda não tem videoId. Procura "artista - música" no
     // YouTube e usa o melhor resultado (é o passo que o spotdl também faz).
     if (!t.videoId && t.query) {
       if (stopped) {
@@ -335,11 +473,11 @@ export async function importTracks(
     }
 
     const source = `youtube:${t.videoId}`;
-    if (
-      seen.has(t.videoId) ||
-      inFlight.has(t.videoId) ||
-      trackIdBySource(source)
-    ) {
+    const known = trackIdBySource(source);
+    if (seen.has(t.videoId) || inFlight.has(t.videoId) || known) {
+      // Já estava na biblioteca: não baixa de novo, mas recebe as tags escolhidas
+      // e passa a lembrar a origem no catálogo.
+      if (known) await touchExisting(known, tags, key);
       if (!seen.has(t.videoId)) result.existing.push(t);
       seen.add(t.videoId);
       continue;
@@ -371,6 +509,11 @@ export async function importTracks(
           (t.cover ? await fetchCover(t.cover) : undefined) ??
           (await fetchThumbnail(t.videoId)),
         source,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        tags,
+        alsoFrom: key ? [key] : undefined,
       });
       if (!job) throw new Error("formato não reconhecido");
       pending.push(
@@ -466,8 +609,23 @@ async function download(t: ResolvedTrack, i: number): Promise<File> {
     );
   });
 
-  const artist = stream.artist || t.artist || "";
-  const title = stream.title || t.title || `faixa ${i + 1}`;
+  // Título e artista que vão para a faixa. Do Spotify/Deezer (as que têm
+  // `query`), ficam os de lá (mais limpos). Do YouTube: o metadado de música;
+  // senão "Artista - Título" no nome do vídeo; senão o canal, se for oficial
+  // ("- Topic", VEVO). Se nada disso der, o importador procura pelo título
+  // (ou fica "Artista desconhecido").
+  if (!t.query || !t.artist) {
+    const videoTitle = stream.title || t.title;
+    const split = stream.artist ? null : splitArtistTitle(videoTitle);
+    t.artist =
+      stream.artist ||
+      split?.artist ||
+      artistFromChannel(stream.channel ?? "") ||
+      artistFromChannel(t.artist);
+    t.title = split?.title || videoTitle;
+  }
+  const artist = t.artist;
+  const title = t.title || `faixa ${i + 1}`;
   const base = artist ? `${artist} - ${title}` : title;
   // O importador reconhece pela extensão/tipo. O áudio do YouTube costuma
   // ser Opus (webm) ou AAC (m4a).

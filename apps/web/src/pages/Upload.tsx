@@ -1,19 +1,32 @@
 import { useRef, useState } from "react";
 import { Icon } from "../components/Icon";
 import { clearFinished, enqueue, jobsStore } from "../lib/importer";
-import { isSpotifyLink, isYouTubeLink } from "../lib/resolver";
-import { dismissImportResult, linkImportStore, retryLinkImport, setImportLink, skipAllPending, startLinkImport, toggleSkip } from "../lib/linkImport";
+import { isDeezerLink, isSpotifyLink, isYouTubeLink } from "../lib/resolver";
+import { StorageBar } from "../components/StorageBar";
+import { TagInput } from "../components/TagInput";
+import { answerLinkAsk, answerLinkPick, cancelLinkImport, setImportTags, dismissImportResult, linkImportStore, retryLinkImport, setImportLink, skipAllPending, startLinkImport, toggleSkip } from "../lib/linkImport";
+import { askNotifyPermission } from "../lib/notify";
 import { useStore } from "../lib/observable";
 import { formatBytes } from "../lib/tracks";
 import { openTrack } from "../lib/ui";
 import { navigate } from "../router";
+
+/** O embed do Spotify só entrega as 50 primeiras músicas de uma playlist. */
+function SpotifyLimit() {
+  return (
+    <p className="small muted">
+      O Spotify só deixa ler as <strong>50 primeiras músicas</strong> da playlist. Se ela tiver
+      mais, o resto ficou de fora.
+    </p>
+  );
+}
 
 export function UploadPage() {
   const jobs = useStore(jobsStore);
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   // Vem de um store (e não de useState) para sobreviver à troca de tela.
-  const { link, busy, note, error: linkError, result, tracks, current, skipped } = useStore(linkImportStore);
+  const { link, busy, note, error: linkError, result, tracks, current, skipped, ask, pick, tags } = useStore(linkImportStore);
   /** Ainda não começaram: dá para ignorar (ou desfazer) clicando. */
   const upcoming = busy ? tracks.slice(current + 1) : [];
   const toSkip = upcoming.filter((t) => !skipped.has(t)).length;
@@ -26,10 +39,17 @@ export function UploadPage() {
   const bigBatch = jobs.filter((j) => j.status === "na fila").length > 20;
 
   /** Serviço do link colado: muda a cor da borda, o ícone e a cor do botão. */
-  const brand = isYouTubeLink(link) ? "youtube" : isSpotifyLink(link) ? "spotify" : null;
+  const brand = isYouTubeLink(link)
+    ? "youtube"
+    : isSpotifyLink(link)
+      ? "spotify"
+      : isDeezerLink(link)
+        ? "deezer"
+        : null;
 
   return (
     <div className="page">
+      <StorageBar onlyWhenFull />
       <div
         className={`dropzone${over ? " over" : ""}`}
         onClick={() => input.current?.click()}
@@ -38,6 +58,7 @@ export function UploadPage() {
         onDrop={(e) => {
           e.preventDefault();
           setOver(false);
+          void askNotifyPermission();
           enqueue([...e.dataTransfer.files]);
         }}
       >
@@ -54,6 +75,7 @@ export function UploadPage() {
           multiple
           hidden
           onChange={(e) => {
+            void askNotifyPermission();
             enqueue([...(e.target.files ?? [])]);
             e.target.value = "";
           }}
@@ -63,12 +85,12 @@ export function UploadPage() {
       <div className={`link-import${brand ? ` linked ${brand}` : ""}`}>
         <label className="link-field">
           <span className="link-brand" aria-hidden="true">
-            <Icon name={brand === "spotify" ? "spotify" : "youtube"} size={20} />
+            <Icon name={brand ?? "youtube"} size={20} />
           </span>
           <input
             type="url"
             value={link}
-            placeholder="ou cole um link do YouTube ou do Spotify"
+            placeholder="ou cole um link do YouTube, Spotify ou Deezer"
             disabled={busy}
             onChange={(e) => setImportLink(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && fetchPlaylist()}
@@ -81,12 +103,74 @@ export function UploadPage() {
         >
           {busy ? "importando..." : "importar"}
         </button>
+        {/* Antes do 1º download (lendo o link): dá para desistir sem baixar nada. */}
+        {busy && !tracks.length && !ask && !pick && (
+          <button className="chip ghost" onClick={cancelLinkImport}>
+            cancelar
+          </button>
+        )}
         {(note || linkError) && (
           <span className={`muted small${linkError ? " err" : ""}`}>
             {linkError || note}
           </span>
         )}
       </div>
+
+      {/* Opcional: só aparece com um link válido (ou se já houver tags escolhidas). */}
+      {(brand || tags.length > 0) && (
+        <div className="import-tags">
+          <span className="muted small">
+            Tags para todas as músicas <span className="muted">(opcional)</span>
+          </span>
+          <TagInput tags={tags} onChange={setImportTags} placeholder="ex.: academia, anos-80…" disabled={busy} />
+        </div>
+      )}
+
+      {pick && (
+        <div className="import-result">
+          <p>
+            Esse link é de uma música dentro {pick.mix ? "de um " : "de uma "}
+            <strong>{pick.mix ? "mix do YouTube" : "playlist"}</strong>. O que você quer baixar?
+          </p>
+          {pick.mix && (
+            <p className="small muted">
+              Mixes são montados pelo próprio YouTube a partir da música e costumam ter até 50 faixas.
+            </p>
+          )}
+          <div className="import-result-actions">
+            <button className="primary" onClick={() => answerLinkPick("one")}>
+              só esta música
+            </button>
+            <button className="link" onClick={() => answerLinkPick("all")}>
+              {pick.mix ? "o mix inteiro" : "a playlist inteira"}
+            </button>
+            <button className="chip ghost" onClick={cancelLinkImport}>
+              cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {ask && (
+        <div className="import-result">
+          <p>
+            A playlist <strong>{ask.name}</strong> tem <strong>{ask.count}</strong> músicas.
+            Quer que elas fiquem ligadas a uma playlist no app?
+          </p>
+          {ask.truncated && <SpotifyLimit />}
+          <div className="import-result-actions">
+            <button className="primary" onClick={() => answerLinkAsk(true)}>
+              baixar e criar a playlist
+            </button>
+            <button className="link" onClick={() => answerLinkAsk(false)}>
+              só baixar as músicas
+            </button>
+            <button className="chip ghost" onClick={cancelLinkImport}>
+              cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {upcoming.length > 0 && (
         <div className="import-queue">
@@ -105,7 +189,7 @@ export function UploadPage() {
             {upcoming.map((t, i) => {
               const off = skipped.has(t);
               return (
-                <li key={`${t.videoId || t.spotifyId || t.title}-${i}`}>
+                <li key={`${t.videoId || t.spotifyId || t.deezerId || t.title}-${i}`}>
                   <button
                     className={off ? "skipped" : ""}
                     onClick={() => toggleSkip(t)}
@@ -147,6 +231,12 @@ export function UploadPage() {
               </>
             )}
           </p>
+          {result.truncated && <SpotifyLimit />}
+          {result.tags && (
+            <p className="small muted">
+              Com as tags {result.tags.map((t) => `#${t}`).join(" ")}
+            </p>
+          )}
           {result.playlist && (
             <p className="small">
               Tudo ligado à playlist{" "}

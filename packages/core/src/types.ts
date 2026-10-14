@@ -28,6 +28,13 @@ export interface Track {
   cover?: BlobRef;
   /** De onde veio, quando importado de fora. Ex.: "youtube:dQw4w9WgXcQ". Evita baixar de novo. */
   source?: string;
+  /**
+   * Outras origens da mesma música nos catálogos (ex.: "spotify:<id>", "deezer:<id>").
+   * Ao sincronizar uma playlist, uma faixa já conhecida não é procurada de novo no YouTube.
+   */
+  alsoFrom?: string[];
+  /** Quando foi marcada como favorita (ausente = não é favorita). */
+  favoriteAt?: number;
   addedAt: number;
 }
 
@@ -37,6 +44,10 @@ export interface Playlist {
   createdAt: number;
   /** De onde veio, quando importada. Ex.: "youtube-playlist:PL...", "spotify-playlist:37i9...". */
   source?: string;
+  /** Link original da importação, para "sincronizar" (baixar só as novas). */
+  sourceUrl?: string;
+  /** Quando foi sincronizada pela última vez. */
+  syncedAt?: number;
 }
 
 export interface Play {

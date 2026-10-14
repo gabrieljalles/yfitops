@@ -7,6 +7,10 @@ import {
   type BlobRef,
   type Track,
 } from "@yfitops/core";
+import { lookupArtist, splitArtistTitle, UNKNOWN_ARTIST } from "./artist";
+import { notify } from "./notify";
+import { refreshUsage } from "./usage";
+import { mergeTags } from "./search";
 import { uploadBlob } from "./blobs";
 import {
   extractAudio,
@@ -47,6 +51,14 @@ export interface ImportExtras {
   cover?: Blob;
   /** Origem, gravada na faixa para não baixar de novo. Ex.: "youtube:<id>". */
   source?: string;
+  /** Dados da origem (Spotify/YouTube), usados quando o arquivo não traz tags. */
+  title?: string;
+  artist?: string;
+  album?: string;
+  /** Tags escolhidas antes de importar, aplicadas a todas (inclusive às que já existiam). */
+  tags?: string[];
+  /** Origem no catálogo (ex.: "spotify:<id>"), para não procurar no YouTube de novo. */
+  alsoFrom?: string[];
 }
 
 const queue: {
@@ -113,9 +125,12 @@ export function clearFinished() {
 async function drain() {
   if (busy) return;
   busy = true;
+  /** Arquivos enviados pela pessoa nesta rodada (os da importação por link avisam por conta própria). */
+  const sent: number[] = [];
   try {
     while (queue.length) {
       const { job, file, extras, done } = queue.shift()!;
+      if (!extras.source) sent.push(job.id);
       try {
         await importFile(job.id, file, extras);
       } catch (e) {
@@ -129,6 +144,19 @@ async function drain() {
     }
   } finally {
     busy = false;
+  }
+  // O espaço da nuvem mudou: atualiza a barra (Ajustes e o aviso de nuvem cheia).
+  void refreshUsage();
+  if (sent.length) {
+    const jobs = jobsStore.get().filter((j) => sent.includes(j.id));
+    const ok = jobs.filter((j) => j.status === "pronto").length;
+    const failed = jobs.filter((j) => j.status === "erro").length;
+    void notify(
+      failed ? "Envio terminou com erros" : "Envio concluído",
+      [ok && `${ok} enviada(s)`, failed && `${failed} com erro`, jobs.length - ok - failed && `${jobs.length - ok - failed} já estavam`]
+        .filter(Boolean)
+        .join(" · "),
+    );
   }
 }
 
@@ -225,9 +253,14 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
   const trackId = await contentId(getKeys(), bytes);
   const existing = libraryStore.get().tracks[trackId];
   if (existing) {
-    // Faixa importada antes de guardarmos a origem: grava agora, para da próxima vez nem baixar.
-    if (extras.source && !existing.source) {
-      await saveItem("track", trackId, { ...existing, source: extras.source });
+    // Faixa importada antes de guardarmos a origem: grava agora, para da próxima
+    // vez nem baixar. E recebe as tags escolhidas na importação.
+    const source = extras.source && !existing.source ? extras.source : undefined;
+    const tags = mergeTags(existing.tags, extras.tags);
+    const newOrigins = (extras.alsoFrom ?? []).filter((k) => !existing.alsoFrom?.includes(k));
+    const alsoFrom = newOrigins.length ? [...(existing.alsoFrom ?? []), ...newOrigins] : existing.alsoFrom;
+    if (source || tags !== existing.tags || alsoFrom !== existing.alsoFrom) {
+      await saveItem("track", trackId, { ...existing, ...(source && { source }), tags, ...(alsoFrom && { alsoFrom }) });
     }
     update(jobId, {
       status: "já existe",
@@ -336,13 +369,22 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
 
   const playable = toUpload.find((u) => u.key === "opus") ?? toUpload[0];
   const c = meta.common;
+  // Sem tags: o nome do arquivo costuma ser "Artista - Título".
+  const fromName = c.title || extras.title ? null : splitArtistTitle(titleFromName(file.name));
+  const title = c.title || extras.title || fromName?.title || titleFromName(file.name);
+  let artist = c.artist || c.albumartist || extras.artist || fromName?.artist || "";
+  if (!artist) {
+    update(jobId, { detail: "procurando o artista..." });
+    artist = (await lookupArtist(title)) || UNKNOWN_ARTIST;
+  }
   const track: Track = {
-    title: c.title || titleFromName(file.name),
-    artist: c.artist || c.albumartist || "",
-    album: c.album || "",
+    title,
+    artist,
+    album: c.album || extras.album || "",
     genre: c.genre?.[0] || "",
     year: c.year,
-    tags: [],
+    tags: mergeTags([], extras.tags),
+    ...(extras.alsoFrom?.length && { alsoFrom: extras.alsoFrom }),
     duration:
       f.duration ||
       meta.format.duration ||

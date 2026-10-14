@@ -22,11 +22,17 @@ const paths = {
   cloud: "M7 18a4.5 4.5 0 0 1-.5-9A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 8.5z",
   youtube: "M3 8.5A3.5 3.5 0 0 1 6.5 5h11A3.5 3.5 0 0 1 21 8.5v7a3.5 3.5 0 0 1-3.5 3.5h-11A3.5 3.5 0 0 1 3 15.5zM10 9.3v5.4l4.6-2.7z",
   spotify: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM7.3 9.4c3.1-1 6.7-.7 9.4.9M7.9 12.5c2.6-.7 5.4-.4 7.6.8M8.5 15.4c2-.5 4-.3 5.7.6",
+  // Barras de equalizador, como no logo do Deezer.
+  deezer: "M4 19v-2M8 19v-5M12 19v-8M16 19v-11M20 19v-14",
+  heart: "M12 20s-7.5-4.6-7.5-10.1A4.4 4.4 0 0 1 12 7.2a4.4 4.4 0 0 1 7.5 2.7C19.5 15.4 12 20 12 20z",
+  heartFilled: "M12 20s-7.5-4.6-7.5-10.1A4.4 4.4 0 0 1 12 7.2a4.4 4.4 0 0 1 7.5 2.7C19.5 15.4 12 20 12 20z",
+  sync: "M19 8a7.5 7.5 0 0 0-13.4-1.6M5 4v3h3M5 16a7.5 7.5 0 0 0 13.4 1.6M19 20v-3h-3",
+  bell: "M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2.2 2.2 0 0 0 4 0",
 } as const;
 
 export type IconName = keyof typeof paths;
 
-const filled = new Set<IconName>(["play", "pause", "next", "prev"]);
+const filled = new Set<IconName>(["play", "pause", "next", "prev", "heartFilled"]);
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
   const fill = filled.has(name);

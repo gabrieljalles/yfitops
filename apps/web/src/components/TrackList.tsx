@@ -51,6 +51,11 @@ export function TrackList({
               <span className="track-text">
                 <span className="track-title">{t!.title}</span>
                 <span className="track-sub">
+                  {t!.favoriteAt && (
+                    <span className="badge fav" title="Favorita">
+                      <Icon name="heartFilled" size={12} />
+                    </span>
+                  )}
                   {downloaded && (
                     <span className="badge" title="Disponível offline">
                       <Icon name="download" size={12} />

@@ -1,6 +1,18 @@
 // Service worker mínimo: guarda o "casco" do app para abrir offline.
 // Os áudios ficam no IndexedDB (criptografados), não aqui.
-const CACHE = "yfitops-shell-v2";
+const CACHE = "yfitops-shell-v3";
+
+// Tocar no aviso de "importação concluída": abre (ou traz para frente) o app na tela de envio.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      const win = wins.find((w) => new URL(w.url).origin === location.origin);
+      if (win) return win.focus().then((w) => w && w.navigate ? w.navigate("/#/enviar") : undefined);
+      return self.clients.openWindow("/#/enviar");
+    }),
+  );
+});
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/manifest.webmanifest", "/icon.svg", "/icon-192.png"])));

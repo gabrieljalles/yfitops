@@ -1,18 +1,20 @@
 import { useEffect } from "react";
 import { Vinyl } from "./components/Cover";
+import { Dialog } from "./components/Dialog";
 import { Icon, type IconName } from "./components/Icon";
 import { Notice } from "./components/Notice";
+import { SyncButton } from "./components/SyncButton";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
 import { loadOfflineIndex } from "./lib/blobs";
 import { jobsStore } from "./lib/importer";
-import { libraryStore, loadLocal, resetLibrary, sync } from "./lib/library";
+import { loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
 import { playerStore } from "./lib/player";
 import { sessionStore } from "./lib/session";
 import { uiStore } from "./lib/ui";
 import { AuthPage, ResetPage } from "./pages/Auth";
-import { GroupPage, SharedGroupPage } from "./pages/Group";
+import { FavoritesPage, GroupPage, SharedGroupPage } from "./pages/Group";
 import { HomePage } from "./pages/Home";
 import { LibraryPage } from "./pages/Library";
 import { SearchPage } from "./pages/Search";
@@ -82,6 +84,8 @@ export function App() {
             return <GroupPage id={parts[1]} />;
           case "compartilhado":
             return <SharedGroupPage shareId={parts[1]} />;
+          case "favoritas":
+            return <FavoritesPage />;
           default:
             return <HomePage />;
         }
@@ -92,7 +96,6 @@ export function App() {
 
 function Shell({ section, children }: { section: string; children: React.ReactNode }) {
   const player = useStore(playerStore);
-  const lib = useStore(libraryStore);
   const jobs = useStore(jobsStore);
   const uploading = jobs.filter((j) => !["pronto", "já existe", "erro"].includes(j.status)).length;
   const linkImport = useStore(linkImportStore);
@@ -113,13 +116,15 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
             )}
           </button>
         ))}
-        <div className="sync-state muted small" title={lib.error ?? ""}>
-          {lib.offline ? "offline" : lib.syncing ? "sincronizando…" : lib.error ? "erro no sync" : ""}
+        {/* Estado do sync sempre à vista: "tudo salvo", "3 para enviar", "offline"... */}
+        <div className="sync-state">
+          <SyncButton />
         </div>
       </nav>
       <main className="content">
         <header className="mobile-brand">
           <Brand playing={player.playing} />
+          <SyncButton className="compact" />
         </header>
         {children}
       </main>
@@ -127,6 +132,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
       <FullPlayer />
       <TrackSheet />
       <Toast />
+      <Dialog />
     </div>
   );
 }

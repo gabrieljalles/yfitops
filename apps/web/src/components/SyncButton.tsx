@@ -9,7 +9,7 @@ const plural = (n: number) => `${n} ${n === 1 ? "alteração" : "alterações"}`
  * Tudo é salvo no aparelho primeiro; sem servidor, as alterações esperam na fila
  * e sobem sozinhas quando ele voltar.
  */
-export function SyncButton() {
+export function SyncButton({ className = "" }: { className?: string }) {
   const lib = useStore(libraryStore);
   const state = lib.syncing ? "syncing" : lib.offline ? "offline" : lib.error ? "error" : lib.pending ? "pending" : "ok";
   const label = {
@@ -17,7 +17,7 @@ export function SyncButton() {
     offline: lib.pending ? `offline · ${plural(lib.pending)} no aparelho` : "offline",
     error: "erro no sync · tentar de novo",
     pending: `${plural(lib.pending)} para enviar`,
-    ok: "sincronizado",
+    ok: "tudo salvo",
   }[state];
   const title = {
     syncing: "Enviando e recebendo alterações do servidor",
@@ -28,7 +28,13 @@ export function SyncButton() {
   }[state];
 
   return (
-    <button className={`sync-btn ${state}`} onClick={() => void sync()} disabled={lib.syncing} title={title}>
+    <button
+      className={`sync-btn ${state} ${className}`}
+      onClick={() => void sync()}
+      disabled={lib.syncing}
+      title={title}
+      aria-live="polite"
+    >
       <Icon name={state === "ok" ? "check" : "cloud"} size={16} />
       {label}
     </button>

@@ -422,7 +422,116 @@ function artistsOf(entity) {
 }
 
 // ---------------------------------------------------------------------------
-// Resolver uma faixa por BUSCA de texto no YouTube (usado pelo Spotify).
+// Deezer
+//
+// Igual ao Spotify: o áudio do Deezer é protegido (DRM) e não é baixado de lá.
+// A API pública (sem conta e sem chave) entrega a lista completa, com nome,
+// artista, álbum e capa; cada faixa é procurada e baixada no YouTube depois.
+// ---------------------------------------------------------------------------
+
+const DEEZER_HOSTS =
+  /(^|\.)(deezer\.com|deezer\.page\.link|dzr\.page\.link|link\.deezer\.com)$/i;
+
+function isDeezer(url) {
+  try {
+    return DEEZER_HOSTS.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lê o tipo e o ID de um link do Deezer: deezer.com/<idioma>/playlist/<id>,
+ * /album/<id>, /track/<id>, e os links curtos (que redirecionam).
+ */
+async function deezerTarget(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)deezer\.com$/i.test(u.hostname) || u.hostname.startsWith("link.")) {
+    try {
+      const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(8000) });
+      u = new URL(r.url);
+    } catch {
+      return null;
+    }
+  }
+  const m = u.pathname.match(/\/(playlist|album|track)\/(\d+)/);
+  return m ? { type: m[1], id: m[2] } : null;
+}
+
+/** GET na API do Deezer. Ela responde 200 até com erro, no campo `error`. */
+async function deezerGet(path) {
+  const r = await fetch(
+    path.startsWith("http") ? path : `https://api.deezer.com${path}`,
+    { signal: AbortSignal.timeout(15000) },
+  );
+  if (!r.ok)
+    throw Object.assign(new Error(`O Deezer respondeu HTTP ${r.status}`), {
+      kind: "temp",
+      retryable: true,
+    });
+  const body = await r.json();
+  if (body?.error) {
+    // 4 = limite de pedidos; 800 = não existe ou é privada.
+    const code = body.error.code;
+    throw Object.assign(
+      new Error(
+        code === 800
+          ? "Não achei essa playlist no Deezer (ela é privada?)"
+          : `O Deezer recusou o pedido: ${body.error.message ?? code}`,
+      ),
+      {
+        kind: code === 4 ? "limit" : code === 800 ? "gone" : "temp",
+        retryable: code !== 800,
+      },
+    );
+  }
+  return body;
+}
+
+/** Faixa do Deezer → `ResolvedTrack` sem videoId (com `query` para o YouTube). */
+function fromDeezer(t, album) {
+  const artist = t.artist?.name ?? "";
+  const title = t.title_short || t.title || "Faixa sem título";
+  const albumInfo = t.album ?? album ?? {};
+  return {
+    videoId: "", // preenchido ao resolver no YouTube
+    deezerId: String(t.id),
+    title,
+    artist,
+    album: albumInfo.title ?? "",
+    duration: t.duration ?? 0,
+    cover: albumInfo.cover_xl || albumInfo.cover_big || "",
+    query: [artist, title].filter(Boolean).join(" "),
+  };
+}
+
+/** Lista as faixas de uma playlist/álbum do Deezer, ou uma faixa solta. */
+async function deezerList(target) {
+  if (target.type === "track") {
+    return { name: null, tracks: [fromDeezer(await deezerGet(`/track/${target.id}`))] };
+  }
+  const info = await deezerGet(`/${target.type}/${target.id}`);
+  // Nos álbuns, as faixas não trazem o álbum: usa o do próprio pedido.
+  const album = target.type === "album" ? info : undefined;
+  const tracks = [];
+  let next = `/${target.type}/${target.id}/tracks?limit=100`;
+  let guard = 0;
+  while (next && guard++ < 50) {
+    const page = await deezerGet(next);
+    // Inclui as "indisponíveis no Deezer" (readable: false): o áudio vem do YouTube.
+    for (const t of page.data ?? []) if (t?.id) tracks.push(fromDeezer(t, album));
+    next = page.next ?? null;
+  }
+  return { name: info.title || null, tracks };
+}
+
+// ---------------------------------------------------------------------------
+// Resolver uma faixa por BUSCA de texto no YouTube (usado pelo Spotify e Deezer).
 // É o mesmo que o spotdl faz: procura "artista - música" e pega o melhor
 // resultado. Pede só os metadados (rápido); o áudio vem depois pelo /stream.
 // ---------------------------------------------------------------------------
@@ -447,6 +556,96 @@ async function searchYouTube(query) {
     artist: first.uploader ?? first.channel ?? "",
     duration: first.duration ?? 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Descobrir o artista de uma música só pelo título (para quando o arquivo não
+// traz e o nome não diz). Só aceita um resultado cujo título bata com o da
+// música: um artista errado é pior que "Artista desconhecido".
+// ---------------------------------------------------------------------------
+
+/** Título comparável: sem acento, sem "(Official Video)", "[Lyrics]", "feat." etc. */
+function normTitle(s) {
+  return (s || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[([{][^)\]}]*[)\]}]/g, " ")
+    .replace(/\b(official|video|audio|lyrics?|letra|clipe|hd|4k|remaster(ed)?|feat\.?|ft\.?)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+const sameTitle = (a, b) => {
+  const x = normTitle(a);
+  const y = normTitle(b);
+  return !!x && !!y && (x === y || x.startsWith(`${y} `) || y.startsWith(`${x} `));
+};
+
+/** Procura no Spotify (só com credenciais) uma faixa com esse título. */
+async function artistOnSpotify(title) {
+  if (!SPOTIFY_ID || !SPOTIFY_SECRET) return "";
+  const r = await spotifyGet(
+    `/search?type=track&limit=5&q=${encodeURIComponent(title)}`,
+  );
+  const hit = (r?.tracks?.items ?? []).find((t) => sameTitle(t.name, title));
+  return hit ? spotifyArtists(hit) : "";
+}
+
+// O YouTube fica de fora daqui de propósito: cada pedido a mais lá aumenta a
+// chance de bloqueio, e ele já é necessário para baixar o áudio. Deezer e
+// iTunes têm APIs públicas de catálogo, sem conta e sem chave.
+
+/** GET de JSON numa API pública de catálogo (falha = "não achei", nunca erro). */
+async function catalogGet(url) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error(`HTTP ${r.status} em ${new URL(url).hostname}`);
+  return r.json();
+}
+
+/** Deezer: catálogo grande (bom em música brasileira), ~50 pedidos a cada 5 s. */
+async function artistOnDeezer(title) {
+  const r = await catalogGet(
+    `https://api.deezer.com/search?limit=10&q=${encodeURIComponent(title)}`,
+  );
+  const hit = (r?.data ?? []).find(
+    (t) => sameTitle(t.title_short ?? t.title, title) && t.artist?.name,
+  );
+  return hit ? hit.artist.name : "";
+}
+
+/** iTunes Search: reserva, porque o limite é menor (~20 pedidos por minuto). */
+async function artistOnITunes(title) {
+  const r = await catalogGet(
+    `https://itunes.apple.com/search?media=music&entity=song&limit=10&term=${encodeURIComponent(title)}`,
+  );
+  const hit = (r?.results ?? []).find(
+    (t) => sameTitle(t.trackName, title) && t.artistName,
+  );
+  return hit ? hit.artistName : "";
+}
+
+/** Títulos já procurados (inclusive os sem resposta), para não perguntar de novo. */
+const artistCache = new Map();
+
+async function findArtist(title) {
+  const key = normTitle(title);
+  if (artistCache.has(key)) return artistCache.get(key);
+  let found = "";
+  for (const [name, source] of [
+    ["Spotify", artistOnSpotify],
+    ["Deezer", artistOnDeezer],
+    ["iTunes", artistOnITunes],
+  ]) {
+    try {
+      found = await source(title);
+    } catch (e) {
+      console.warn(`Busca de artista no ${name} falhou: ${title}`, e.message);
+    }
+    if (found) break;
+  }
+  artistCache.set(key, found);
+  return found;
 }
 
 /** Lê o ID da playlist de um link (o parâmetro `list=...`), incluindo rádios/mixes ("RD..."). */
@@ -557,7 +756,10 @@ async function resolveTrack(videoId) {
   return {
     streamUrl,
     title: info?.track || info?.title || "",
-    artist: info?.artist || info?.uploader || info?.channel || "",
+    // `artist` só quando o YouTube tem o metadado de música de verdade; o canal
+    // vem à parte, porque nem sempre é o artista (canais de letra, reuploads...).
+    artist: info?.artist || "",
+    channel: info?.uploader || info?.channel || "",
   };
 }
 
@@ -690,9 +892,33 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // ---- Deezer: como o Spotify, só a lista; o áudio vem do YouTube. ----
+    if (isDeezer(url)) {
+      const target = await deezerTarget(url);
+      if (!target)
+        return json(res, 400, {
+          error: "Esse link do Deezer não é de uma playlist, álbum ou faixa",
+        });
+      try {
+        const { name, tracks } = await deezerList(target);
+        if (!tracks.length)
+          return json(res, 404, { error: "Essa playlist está vazia" });
+        return json(res, 200, {
+          provider: "deezer",
+          playlist: target.type === "track" ? null : `${target.type}-${target.id}`,
+          name,
+          truncated: false,
+          tracks,
+        });
+      } catch (e) {
+        console.error("Falha ao ler a playlist do Deezer", e);
+        return fail(res, e);
+      }
+    }
+
     if (!isYouTube(url))
       return json(res, 400, {
-        error: "Só aceitamos links do YouTube ou do Spotify",
+        error: "Só aceitamos links do YouTube, do Spotify ou do Deezer",
       });
 
     const list = playlistId(url);
@@ -771,6 +997,25 @@ const server = createServer(async (req, res) => {
       return json(res, 200, t);
     } catch (e) {
       console.error(`Falha ao buscar no YouTube: ${query}`, e);
+      return fail(res, e);
+    }
+  }
+
+  // POST /resolve/artist { title } => { artist } ("" quando não achou com segurança)
+  if (req.method === "POST" && pathname === "/resolve/artist") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (e) {
+      return json(res, 400, { error: e.message });
+    }
+    const { title } = body;
+    if (typeof title !== "string" || !title.trim())
+      return json(res, 400, { error: "Informe o título da música" });
+    try {
+      return json(res, 200, { artist: await findArtist(title.trim()) });
+    } catch (e) {
+      console.error(`Falha ao procurar o artista: ${title}`, e);
       return fail(res, e);
     }
   }

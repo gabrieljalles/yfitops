@@ -3,12 +3,14 @@ import type { Track } from "@yfitops/core";
 import { addToPlaylist, createPlaylist, getTrackFrom, libraryStore } from "../lib/library";
 import { useStore } from "../lib/observable";
 import { addToQueue, playNext } from "../lib/player";
-import { allTags, normalizeTag } from "../lib/search";
 import { deleteTrack, formatBytes, formatTime, removeCover, setCover, updateTrack } from "../lib/tracks";
+import { confirmDialog, promptDialog } from "../lib/dialog";
 import { attempt, closeTrack, toast, uiStore } from "../lib/ui";
 import { Cover } from "./Cover";
 import { DownloadMenu } from "./DownloadMenu";
+import { FavoriteButton } from "./FavoriteButton";
 import { Icon } from "./Icon";
+import { TagInput } from "./TagInput";
 
 export function TrackSheet() {
   const { editing } = useStore(uiStore);
@@ -34,18 +36,11 @@ export function TrackSheet() {
 function Editor({ id, track, shared }: { id: string; track: Track; shared: boolean }) {
   const lib = useStore(libraryStore);
   const [form, setForm] = useState({ title: track.title, artist: track.artist, album: track.album, genre: track.genre });
-  const [tagInput, setTagInput] = useState("");
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const dirty = (Object.keys(form) as (keyof typeof form)[]).some((k) => form[k] !== track[k]);
-  const suggestions = allTags(Object.values(lib.tracks)).filter((t) => !track.tags.includes(t) && t.startsWith(normalizeTag(tagInput))).slice(0, 6);
 
   const saveTags = (tags: string[]) => attempt(() => updateTrack(id, { tags }));
-  const addTag = (raw: string) => {
-    const tags = raw.split(",").map(normalizeTag).filter((t) => t && !track.tags.includes(t));
-    if (tags.length) void saveTags([...track.tags, ...tags]);
-    setTagInput("");
-  };
 
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
     setBusy(true);
@@ -84,6 +79,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
           </span>
           <span className="muted small">{sizes}</span>
         </div>
+        <FavoriteButton id={id} />
         <button className="icon-btn" onClick={closeTrack} title="Fechar">
           <Icon name="close" />
         </button>
@@ -110,9 +106,9 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
               })}
               <button
                 className="chip ghost"
-                onClick={() => {
-                  const name = prompt("Nome da nova playlist");
-                  if (name?.trim()) void attempt(() => createPlaylist(name.trim(), [id]), `Playlist ${name.trim()} criada`);
+                onClick={async () => {
+                  const name = await promptDialog({ title: "Nova playlist", input: { placeholder: "Nome da playlist" }, confirm: "criar" });
+                  if (name) void attempt(() => createPlaylist(name, [id]), `Playlist ${name} criada`);
                 }}
               >
                 <Icon name="plus" size={14} /> nova playlist
@@ -122,35 +118,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
 
           <section>
             <h4>Tags</h4>
-            <div className="chips">
-              {track.tags.map((tag) => (
-                <button key={tag} className="chip on" title="Remover tag" onClick={() => saveTags(track.tags.filter((x) => x !== tag))}>
-                  #{tag} <Icon name="close" size={12} />
-                </button>
-              ))}
-              <input
-                className="chip-input"
-                placeholder="adicionar tag…"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === ",") {
-                    e.preventDefault();
-                    addTag(tagInput);
-                  }
-                }}
-                onBlur={() => tagInput && addTag(tagInput)}
-              />
-            </div>
-            {suggestions.length > 0 && (
-              <div className="chips suggestions">
-                {suggestions.map((s) => (
-                  <button key={s} className="chip ghost" onMouseDown={(e) => e.preventDefault()} onClick={() => addTag(s)}>
-                    #{s}
-                  </button>
-                ))}
-              </div>
-            )}
+            <TagInput tags={track.tags} onChange={(tags) => void saveTags(tags)} />
           </section>
 
           <section>
@@ -191,8 +159,14 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
             )}
             <button
               className="link danger"
-              onClick={() => {
-                if (confirm(`Excluir "${track.title}" da nuvem? Isso não pode ser desfeito.`)) {
+              onClick={async () => {
+                const ok = await confirmDialog({
+                  title: "Excluir música?",
+                  message: `"${track.title}" será apagada da nuvem e de todos os aparelhos. Isso não pode ser desfeito.`,
+                  confirm: "excluir",
+                  danger: true,
+                });
+                if (ok) {
                   closeTrack();
                   void attempt(() => deleteTrack(id), "Música excluída");
                 }

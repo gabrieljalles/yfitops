@@ -3,6 +3,20 @@ import { defaultDownloadQuality, deleteBlob, offlineVariant, removeOffline, save
 import { makeCover } from "./importer";
 import { deleteItem, getTrack, libraryStore, saveItem } from "./library";
 
+/**
+ * Marca (ou desmarca) como favoritas. Só as da própria biblioteca: as recebidas
+ * por compartilhamento são de outra pessoa.
+ */
+export async function setFavorite(ids: string[], on: boolean) {
+  const tracks = libraryStore.get().tracks;
+  for (const id of ids) {
+    const t = tracks[id];
+    if (!t || !!t.favoriteAt === on) continue;
+    const { favoriteAt: _old, ...rest } = t;
+    await saveItem("track", id, on ? { ...t, favoriteAt: Date.now() } : rest);
+  }
+}
+
 /** Blobs ainda usados por outras faixas (ex.: a mesma capa num álbum inteiro). */
 function inUse(exceptId: string): Set<string> {
   const ids = new Set<string>();

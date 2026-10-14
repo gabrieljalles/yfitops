@@ -2,6 +2,7 @@ import type { BlobRef, Track } from "@yfitops/core";
 import { coverUrl, offlineStore, pickVariant, readBlob, variantCandidates } from "./blobs";
 import { getTrack, recordPlay } from "./library";
 import { createStore } from "./observable";
+import { prefsStore } from "./prefs";
 
 export interface PlayerState {
   queue: string[];
@@ -27,11 +28,57 @@ export const playerStore = createStore<PlayerState>({
   error: null,
 });
 
-const audio = new Audio();
-audio.preload = "auto";
+/**
+ * Dois <audio> ("decks"): na transição suave (crossfade), a música que acaba
+ * vai sumindo num deles enquanto a próxima entra no outro. `audio` é sempre o
+ * deck ativo; os eventos do outro são ignorados.
+ */
+const decks = [new Audio(), new Audio()];
+for (const d of decks) d.preload = "auto";
+let audio = decks[0];
+const otherDeck = () => (audio === decks[0] ? decks[1] : decks[0]);
+
+/**
+ * Alguns aparelhos (iPhone/iPad) não deixam o site mudar o volume do <audio>:
+ * lá a transição viraria duas músicas tocando juntas, então fica indisponível.
+ */
+export const canCrossfade = (() => {
+  const a = new Audio();
+  a.volume = 0.5;
+  return a.volume === 0.5;
+})();
+
+/** Transição em andamento: o deck que está saindo e o "relógio" do volume. */
+let fade: { from: HTMLAudioElement; timer: ReturnType<typeof setInterval> } | null = null;
+/** Já começou a transição para a próxima nesta música? */
+let crossStarted = false;
+
+/** Termina a transição na hora: o deck que saía para, o ativo fica no volume cheio. */
+function endFade() {
+  if (!fade) return;
+  clearInterval(fade.timer);
+  fade.from.pause();
+  fade.from.volume = 1;
+  audio.volume = 1;
+  fade = null;
+}
+
+/** Curva de potência constante: o volume somado dos dois não "afunda" no meio. */
+function startFade(from: HTMLAudioElement, seconds: number) {
+  const started = performance.now();
+  const timer = setInterval(() => {
+    const k = Math.min(1, (performance.now() - started) / (seconds * 1000));
+    audio.volume = Math.sin((k * Math.PI) / 2);
+    from.volume = Math.cos((k * Math.PI) / 2);
+    if (k >= 1) endFade();
+  }, 50);
+  fade = { from, timer };
+}
+
 let currentUrl: string | null = null;
 let loadToken = 0;
 let playedFor = 0;
+let lastTick = 0;
 let counted = false;
 /** Ordem original antes de embaralhar. */
 let unshuffled: string[] | null = null;
@@ -49,7 +96,8 @@ function remember(id: string, url: string) {
   decoded.set(id, url);
   while (decoded.size > 4) {
     const [oldId, oldUrl] = decoded.entries().next().value!;
-    if (oldUrl === currentUrl) break;
+    // Não solta a música de nenhum deck (na transição, as duas estão tocando).
+    if (oldUrl === currentUrl || decks.some((d) => d.src === oldUrl)) break;
     URL.revokeObjectURL(oldUrl);
     decoded.delete(oldId);
   }
@@ -70,32 +118,50 @@ let probing = false;
 
 /** Carrega uma URL no <audio>; rejeita se o navegador não decodificar o formato. */
 function tryLoad(url: string, autoplay: boolean): Promise<void> {
-  audio.src = url;
-  if (autoplay) return audio.play();
+  const el = audio;
+  el.src = url;
+  if (autoplay) return el.play();
   return new Promise((resolve, reject) => {
     const ok = () => (cleanup(), resolve());
-    const fail = () => (cleanup(), reject(audio.error ?? new Error("formato não suportado")));
+    const fail = () => (cleanup(), reject(el.error ?? new Error("formato não suportado")));
     const cleanup = () => {
-      audio.removeEventListener("loadedmetadata", ok);
-      audio.removeEventListener("error", fail);
+      el.removeEventListener("loadedmetadata", ok);
+      el.removeEventListener("error", fail);
     };
-    audio.addEventListener("loadedmetadata", ok);
-    audio.addEventListener("error", fail);
+    el.addEventListener("loadedmetadata", ok);
+    el.addEventListener("error", fail);
   });
 }
 
 const isUnsupported = (e: unknown) =>
   (e as Error)?.name === "NotSupportedError" || (e instanceof MediaError && e.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED);
 
-async function loadIndex(index: number, autoplay = true) {
+/**
+ * Carrega e toca a música `index` da fila. Com `crossfade` (segundos), a atual
+ * continua tocando no outro deck e vai sumindo enquanto a nova entra.
+ */
+async function loadIndex(index: number, autoplay = true, crossfade = 0) {
   const { queue } = playerStore.get();
   const id = queue[index];
   const t = id ? getTrack(id) : undefined;
   if (!t) return;
   const token = ++loadToken;
-  audio.pause();
+  let fadingFrom: HTMLAudioElement | null = null;
+  if (crossfade > 0 && !audio.paused) {
+    endFade();
+    fadingFrom = audio;
+    audio = otherDeck();
+    audio.volume = 0;
+  } else {
+    // Troca "na mão" (próxima, anterior, escolher outra): corta na hora.
+    endFade();
+    audio.pause();
+    audio.volume = 1;
+  }
+  crossStarted = false;
   set({ index, loading: true, time: 0, duration: t.duration, error: null });
   playedFor = 0;
+  lastTick = 0;
   counted = false;
   updateMediaSession(t);
   try {
@@ -120,7 +186,14 @@ async function loadIndex(index: number, autoplay = true) {
       }
     }
     if (!played) throw new Error(`Este navegador não toca este formato (${unsupported.join(", ")})`);
+    if (fadingFrom) startFade(fadingFrom, crossfade);
   } catch (e) {
+    // A nova não tocou: a que estava saindo para, e o deck ativo volta ao volume cheio.
+    if (fadingFrom) {
+      fadingFrom.pause();
+      fadingFrom.volume = 1;
+      audio.volume = 1;
+    }
     if (token === loadToken) {
       set({
         error: !navigator.onLine
@@ -182,6 +255,7 @@ export function jumpTo(index: number) {
 
 export function toggle() {
   if (playerStore.get().index < 0) return;
+  endFade(); // pausar no meio da transição para as duas
   if (audio.paused) void audio.play().catch(() => {});
   else audio.pause();
 }
@@ -205,6 +279,9 @@ export function prev() {
 }
 
 export function seek(seconds: number) {
+  endFade();
+  // Voltou para antes do ponto da transição: ela pode acontecer de novo.
+  crossStarted = false;
   audio.currentTime = seconds;
   set({ time: seconds });
 }
@@ -240,8 +317,15 @@ function shuffleArray<T>(a: T[]): T[] {
 
 // ---------------- Eventos do <audio> ----------------
 
-let lastTick = 0;
-audio.addEventListener("timeupdate", () => {
+/** Próxima da fila para a transição suave (null = não há ou é "repetir uma"). */
+function crossfadeTarget(): number | null {
+  const s = playerStore.get();
+  if (s.repeat === "one") return null;
+  if (s.index + 1 < s.queue.length) return s.index + 1;
+  return s.repeat === "all" && s.queue.length > 1 ? 0 : null;
+}
+
+function onTimeUpdate() {
   const now = audio.currentTime;
   if (Math.abs(now - lastTick) < 2 && !audio.paused) playedFor += Math.max(0, now - lastTick);
   lastTick = now;
@@ -251,6 +335,16 @@ audio.addEventListener("timeupdate", () => {
     counted = true;
     void recordPlay(id);
   }
+  // Transição suave: perto do fim, a próxima começa no outro deck.
+  const cf = canCrossfade ? prefsStore.get().crossfade : 0;
+  const left = audio.duration - now;
+  if (cf > 0 && !crossStarted && !fade && audio.duration > cf * 2 && left <= cf && !audio.paused) {
+    const target = crossfadeTarget();
+    if (target !== null) {
+      crossStarted = true;
+      void loadIndex(target, true, Math.max(1, left));
+    }
+  }
   set({ time: now });
   if ("mediaSession" in navigator && audio.duration) {
     try {
@@ -259,12 +353,19 @@ audio.addEventListener("timeupdate", () => {
       /* alguns navegadores reclamam durante a troca de faixa */
     }
   }
-});
-audio.addEventListener("durationchange", () => set({ duration: audio.duration || 0 }));
-audio.addEventListener("play", () => set({ playing: true }));
-audio.addEventListener("pause", () => set({ playing: false }));
-audio.addEventListener("ended", () => next(true));
-audio.addEventListener("error", () => !probing && set({ error: "Não foi possível tocar este arquivo", loading: false }));
+}
+
+// Os dois decks escutam os mesmos eventos, mas só o ativo mexe no estado: o que
+// está saindo numa transição termina ("ended"/"pause") sem afetar a música nova.
+for (const deck of decks) {
+  const active = (fn: () => void) => () => deck === audio && fn();
+  deck.addEventListener("timeupdate", active(onTimeUpdate));
+  deck.addEventListener("durationchange", active(() => set({ duration: audio.duration || 0 })));
+  deck.addEventListener("play", active(() => set({ playing: true })));
+  deck.addEventListener("pause", active(() => set({ playing: false })));
+  deck.addEventListener("ended", active(() => next(true)));
+  deck.addEventListener("error", active(() => !probing && set({ error: "Não foi possível tocar este arquivo", loading: false })));
+}
 
 // ---------------- Controles do sistema (tela bloqueada, fone, notificação) ----------------
 
@@ -291,7 +392,10 @@ if ("mediaSession" in navigator) {
 }
 
 export function stop() {
-  audio.pause();
-  audio.removeAttribute("src");
+  endFade();
+  for (const d of decks) {
+    d.pause();
+    d.removeAttribute("src");
+  }
   set({ queue: [], index: -1, playing: false, time: 0 });
 }

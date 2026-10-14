@@ -4,8 +4,11 @@ import { Cover } from "../components/Cover";
 import { DownloadMenu } from "../components/DownloadMenu";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
-import { deleteItem, getTrackFrom, libraryStore, removeFromPlaylist, saveItem, sharePlaylist, sharedTrackId, unshare } from "../lib/library";
+import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, saveItem, sharePlaylist, sharedTrackId, unshare } from "../lib/library";
+import { confirmDialog, promptDialog } from "../lib/dialog";
+import { linkImportStore, syncPlaylist } from "../lib/linkImport";
 import { useStore } from "../lib/observable";
+import { playlistSyncUrl } from "../lib/resolver";
 import { playList, toggleShuffle, playerStore } from "../lib/player";
 import { attempt, toast } from "../lib/ui";
 import { navigate } from "../router";
@@ -44,7 +47,9 @@ export function GroupPage({ id }: { id: string }) {
   const lib = useStore(libraryStore);
   const p = lib.playlists[id];
   const [editing, setEditing] = useState(false);
+  const importing = useStore(linkImportStore);
   if (!p) return <div className="page muted">Playlist não encontrada.</div>;
+  const syncUrl = playlistSyncUrl(p);
   const sentTo = lib.sent.filter((s) => s.shareId.startsWith(`${id}.`));
 
   return (
@@ -52,33 +57,66 @@ export function GroupPage({ id }: { id: string }) {
       <GroupHeader name={p.name} sub={musicas(p.trackIds.length)} ids={p.trackIds}>
         <button
           className="chip ghost"
-          onClick={() => {
-            const email = prompt("E-mail de quem vai receber a playlist (precisa ter conta):");
-            if (email?.trim()) void attempt(() => sharePlaylist(id, email.trim()), "Playlist compartilhada");
+          onClick={async () => {
+            const email = await promptDialog({
+              title: "Compartilhar playlist",
+              message: "E-mail de quem vai receber a playlist (a pessoa precisa ter conta).",
+              input: { type: "email", placeholder: "email@exemplo.com" },
+              confirm: "compartilhar",
+            });
+            if (email) void attempt(() => sharePlaylist(id, email), "Playlist compartilhada");
           }}
         >
           <Icon name="share" size={14} /> compartilhar
         </button>
+        {syncUrl && (
+          <button
+            className="chip ghost"
+            disabled={importing.busy}
+            title={`Baixa só as músicas novas de ${syncUrl}`}
+            onClick={() => void syncPlaylist(id)}
+          >
+            <Icon name="sync" size={14} /> {importing.syncing === id ? "sincronizando…" : "sincronizar"}
+          </button>
+        )}
         <button className={`chip ghost${editing ? " on" : ""}`} onClick={() => setEditing(!editing)}>
           {editing ? "pronto" : "editar"}
         </button>
       </GroupHeader>
 
+      {syncUrl && (
+        <p className="muted small sync-note">
+          {importing.syncing === id
+            ? importing.note || "lendo a playlist de origem…"
+            : importing.busy
+              ? "Espere a importação em andamento terminar para sincronizar."
+              : p.syncedAt
+                ? `Importada de ${serviceOf(syncUrl)} · sincronizada ${sinceText(p.syncedAt)}`
+                : `Importada de ${serviceOf(syncUrl)}`}
+        </p>
+      )}
+
       {editing && (
         <div className="row wrap edit-bar">
           <button
             className="link"
-            onClick={() => {
-              const name = prompt("Novo nome", p.name);
-              if (name?.trim()) void attempt(() => saveItem("playlist", id, { ...p, name: name.trim() }));
+            onClick={async () => {
+              const name = await promptDialog({ title: "Renomear playlist", input: { value: p.name }, confirm: "salvar" });
+              if (name) void attempt(() => saveItem("playlist", id, { ...p, name }));
             }}
           >
             Renomear
           </button>
           <button
             className="link danger"
-            onClick={() => {
-              if (confirm(`Apagar a playlist "${p.name}"? As músicas continuam na biblioteca.`)) {
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: "Apagar playlist?",
+                message: `"${p.name}" será apagada. As músicas continuam na biblioteca.`,
+                confirm: "apagar",
+                danger: true,
+              });
+              if (ok) {
                 navigate("/biblioteca");
                 void attempt(() => deleteItem("playlist", id), "Playlist apagada");
               }
@@ -131,8 +169,14 @@ export function SharedGroupPage({ shareId }: { shareId: string }) {
       <GroupHeader name={g.playlist.name} sub={`${musicas(ids.length)} · de ${g.fromEmail}`} ids={ids}>
         <button
           className="chip ghost"
-          onClick={() => {
-            if (confirm("Sair desta playlist compartilhada?")) {
+          onClick={async () => {
+            const ok = await confirmDialog({
+              title: "Sair da playlist?",
+              message: `Você deixa de ver "${g.playlist.name}". Quem compartilhou pode te mandar de novo.`,
+              confirm: "sair",
+              danger: true,
+            });
+            if (ok) {
               navigate("/");
               void attempt(() => unshare(shareId)).then(() => toast("Você saiu da playlist"));
             }
@@ -144,4 +188,30 @@ export function SharedGroupPage({ shareId }: { shareId: string }) {
       <TrackList ids={ids} />
     </div>
   );
+}
+
+/** Playlist automática com as favoritas (o coração), da mais recente para a mais antiga. */
+export function FavoritesPage() {
+  const lib = useStore(libraryStore);
+  const ids = favoriteIds(lib);
+  return (
+    <div className="page">
+      <GroupHeader name="Favoritas" sub={`${musicas(ids.length)} · atualizada sozinha`} ids={ids} />
+      <TrackList ids={ids} empty="Nenhuma favorita ainda. Toque no coração de uma música para ela aparecer aqui." />
+    </div>
+  );
+}
+
+const serviceOf = (url: string) =>
+  /spotify/i.test(url) ? "Spotify" : /deezer/i.test(url) ? "Deezer" : "YouTube";
+
+/** "agora há pouco", "há 3 horas", "há 2 dias". */
+function sinceText(at: number): string {
+  const min = Math.round((Date.now() - at) / 60000);
+  if (min < 2) return "agora há pouco";
+  if (min < 60) return `há ${min} minutos`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `há ${h} ${h === 1 ? "hora" : "horas"}`;
+  const d = Math.round(h / 24);
+  return `há ${d} ${d === 1 ? "dia" : "dias"}`;
 }

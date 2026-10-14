@@ -4,6 +4,7 @@ import { cycleRepeat, jumpTo, next, playerStore, prev, seek, toggle, toggleShuff
 import { formatTime } from "../lib/tracks";
 import { openTrack, uiStore } from "../lib/ui";
 import { Cover } from "./Cover";
+import { FavoriteButton } from "./FavoriteButton";
 import { Icon } from "./Icon";
 
 function useCurrent() {
@@ -14,7 +15,7 @@ function useCurrent() {
 }
 
 export function PlayerBar() {
-  const { p, track } = useCurrent();
+  const { p, id, track } = useCurrent();
   if (!track) return null;
   const pct = p.duration ? (p.time / p.duration) * 100 : 0;
   return (
@@ -28,6 +29,7 @@ export function PlayerBar() {
         </span>
       </button>
       <div className="bar-controls">
+        <FavoriteButton id={id!} />
         <button className="icon-btn hide-sm" onClick={prev} title="Anterior">
           <Icon name="prev" />
         </button>
@@ -62,7 +64,10 @@ export function FullPlayer() {
       <div className="fp-body">
         <Cover cover={track.cover} seed={track.title + track.artist} spinning={p.playing} sleeve className="fp-cover" />
         <div className="fp-meta">
-          <h2>{track.title}</h2>
+          <div className="fp-title-row">
+            <h2>{track.title}</h2>
+            <FavoriteButton id={id} size={24} />
+          </div>
           <p className="muted">{[track.artist, track.album].filter(Boolean).join(" · ") || "Artista desconhecido"}</p>
           {p.error && <p className="error">{p.error}</p>}
         </div>

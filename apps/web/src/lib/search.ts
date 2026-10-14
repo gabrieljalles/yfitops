@@ -37,6 +37,12 @@ export function allTags(tracks: Track[]): string[] {
   return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t);
 }
 
+/** Junta tags sem repetir. Sem nada novo, devolve o mesmo array (dá para comparar com ===). */
+export function mergeTags(current: string[], extra: string[] = []): string[] {
+  const fresh = extra.map(normalizeTag).filter((t, i, all) => t && !current.includes(t) && all.indexOf(t) === i);
+  return fresh.length ? [...current, ...fresh] : current;
+}
+
 export function normalizeTag(tag: string): string {
   return tag.trim().toLowerCase().replace(/^#/, "").replace(/\s+/g, "-");
 }
