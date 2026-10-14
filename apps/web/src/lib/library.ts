@@ -1,0 +1,292 @@
+import {
+  eciesOpen,
+  eciesSeal,
+  fromUtf8,
+  openJSON,
+  randomId,
+  sealJSON,
+  utf8,
+  type ItemKind,
+  type ItemValue,
+  type Play,
+  type Playlist,
+  type ShareInfo,
+  type SharePayload,
+  type SyncPullResponse,
+  type Track,
+} from "@yfitops/core";
+import { api } from "./api";
+import { db, kvGet, kvSet } from "./db";
+import { createStore } from "./observable";
+import { getKeys, getSession } from "./session";
+
+export interface SharedGroup {
+  shareId: string;
+  fromUser: string;
+  fromEmail: string;
+  playlist: Playlist;
+  tracks: Record<string, Track>;
+}
+
+export interface SentShare {
+  shareId: string;
+  toEmail: string;
+  playlistName: string;
+}
+
+export interface Library {
+  tracks: Record<string, Track>;
+  playlists: Record<string, Playlist>;
+  plays: Record<string, Play>;
+  shared: SharedGroup[];
+  sent: SentShare[];
+  loaded: boolean;
+  syncing: boolean;
+  error: string | null;
+}
+
+const empty: Library = { tracks: {}, playlists: {}, plays: {}, shared: [], sent: [], loaded: false, syncing: false, error: null };
+export const libraryStore = createStore<Library>(empty);
+
+const KIND_KEY = { track: "tracks", playlist: "playlists", play: "plays" } as const;
+const MAX_PLAYS = 300;
+
+// IDs de faixas compartilhadas: "s~<shareId>~<trackId>" (o til não aparece nos IDs normais).
+export const sharedTrackId = (shareId: string, trackId: string) => `s~${shareId}~${trackId}`;
+
+export function getTrack(id: string): Track | undefined {
+  const lib = libraryStore.get();
+  if (!id.startsWith("s~")) return lib.tracks[id];
+  const [, shareId, trackId] = id.split("~");
+  return lib.shared.find((g) => g.shareId === shareId)?.tracks[trackId];
+}
+
+// ---------------- Carregar do aparelho ----------------
+
+export async function loadLocal() {
+  const d = await db();
+  const items = await d.getAll("items");
+  const next: Library = { ...empty, tracks: {}, playlists: {}, plays: {} };
+  for (const it of items) (next[KIND_KEY[it.kind]] as Record<string, unknown>)[it.id] = it.value;
+  next.shared = (await kvGet<SharedGroup[]>("shared")) ?? [];
+  next.sent = (await kvGet<SentShare[]>("sent")) ?? [];
+  next.loaded = true;
+  libraryStore.set(next);
+}
+
+export function resetLibrary() {
+  libraryStore.set(empty);
+}
+
+// ---------------- Escritas locais (vão para a fila de envio) ----------------
+
+function applyLocal(kind: ItemKind, id: string, value: unknown | null) {
+  libraryStore.set((lib) => {
+    const key = KIND_KEY[kind];
+    const map = { ...lib[key] } as Record<string, unknown>;
+    if (value === null) delete map[id];
+    else map[id] = value;
+    return { ...lib, [key]: map };
+  });
+}
+
+export async function saveItem<K extends ItemKind>(kind: K, id: string, value: ItemValue[K]) {
+  applyLocal(kind, id, value);
+  const enc = await sealJSON(getKeys().enc, id, value);
+  const d = await db();
+  const tx = d.transaction(["items", "outbox"], "readwrite");
+  await tx.objectStore("items").put({ id, kind, value });
+  await tx.objectStore("outbox").put({ id, kind, enc, deleted: false });
+  await tx.done;
+  scheduleSync();
+}
+
+export async function deleteItem(kind: ItemKind, id: string) {
+  applyLocal(kind, id, null);
+  const d = await db();
+  const tx = d.transaction(["items", "outbox"], "readwrite");
+  await tx.objectStore("items").delete(id);
+  await tx.objectStore("outbox").put({ id, kind, enc: null, deleted: true });
+  await tx.done;
+  scheduleSync();
+}
+
+export async function recordPlay(trackId: string) {
+  await saveItem("play", randomId(), { trackId, at: Date.now() });
+  const plays = Object.entries(libraryStore.get().plays).sort((a, b) => b[1].at - a[1].at);
+  for (const [id] of plays.slice(MAX_PLAYS)) await deleteItem("play", id);
+}
+
+export async function createPlaylist(name: string, trackIds: string[] = []): Promise<string> {
+  const id = randomId();
+  await saveItem("playlist", id, { name, trackIds, createdAt: Date.now() });
+  return id;
+}
+
+export async function addToPlaylist(playlistId: string, trackIds: string[]) {
+  const p = libraryStore.get().playlists[playlistId];
+  if (!p) return;
+  const set = new Set(p.trackIds);
+  await saveItem("playlist", playlistId, { ...p, trackIds: [...p.trackIds, ...trackIds.filter((t) => !set.has(t))] });
+}
+
+export async function removeFromPlaylist(playlistId: string, trackId: string) {
+  const p = libraryStore.get().playlists[playlistId];
+  if (p) await saveItem("playlist", playlistId, { ...p, trackIds: p.trackIds.filter((t) => t !== trackId) });
+}
+
+/** Faixas tocadas recentemente (sem repetir), da mais recente para a mais antiga. */
+export function recentTrackIds(lib: Library, limit = 30): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of Object.values(lib.plays).sort((a, b) => b.at - a.at)) {
+    if (seen.has(p.trackId) || !getTrackFrom(lib, p.trackId)) continue;
+    seen.add(p.trackId);
+    out.push(p.trackId);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+export function getTrackFrom(lib: Library, id: string): Track | undefined {
+  if (!id.startsWith("s~")) return lib.tracks[id];
+  const [, shareId, trackId] = id.split("~");
+  return lib.shared.find((g) => g.shareId === shareId)?.tracks[trackId];
+}
+
+// ---------------- Sync com o servidor ----------------
+
+let timer: ReturnType<typeof setTimeout> | null = null;
+let running: Promise<void> | null = null;
+
+export function scheduleSync(delay = 800) {
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => void sync(), delay);
+}
+
+export function sync(): Promise<void> {
+  running ??= doSync().finally(() => (running = null));
+  return running;
+}
+
+async function doSync() {
+  if (!navigator.onLine) return;
+  libraryStore.set((l) => ({ ...l, syncing: true }));
+  try {
+    await push();
+    await pull();
+    await refreshShares();
+    libraryStore.set((l) => ({ ...l, error: null }));
+  } catch (e) {
+    libraryStore.set((l) => ({ ...l, error: (e as Error).message }));
+  } finally {
+    libraryStore.set((l) => ({ ...l, syncing: false }));
+  }
+}
+
+async function push() {
+  const d = await db();
+  const pending = await d.getAll("outbox");
+  for (let i = 0; i < pending.length; i += 100) {
+    const batch = pending.slice(i, i + 100);
+    await api.json("/sync", { method: "POST", json: { items: batch } });
+    const tx = d.transaction("outbox", "readwrite");
+    // Só remove se não mudou enquanto enviava.
+    for (const it of batch) {
+      const cur = await tx.store.get(it.id);
+      if (cur && cur.enc === it.enc && cur.deleted === it.deleted) await tx.store.delete(it.id);
+    }
+    await tx.done;
+  }
+}
+
+async function pull() {
+  const d = await db();
+  const { enc } = getKeys();
+  let cursor = (await kvGet<number>("cursor")) ?? 0;
+  for (;;) {
+    const res = await api.json<SyncPullResponse>(`/sync?since=${cursor}`);
+    const pending = new Set(await d.getAllKeys("outbox"));
+    const decoded = await Promise.all(
+      res.items
+        .filter((it) => !pending.has(it.id)) // a alteração local mais nova vence
+        .map(async (it) => ({ it, value: it.deleted || !it.enc ? null : await openJSON(enc, it.id, it.enc).catch(() => null) })),
+    );
+    const tx = d.transaction("items", "readwrite");
+    for (const { it, value } of decoded) {
+      if (value === null) await tx.store.delete(it.id);
+      else await tx.store.put({ id: it.id, kind: it.kind, value });
+    }
+    await tx.done;
+    libraryStore.set((lib) => {
+      const next = { ...lib, tracks: { ...lib.tracks }, playlists: { ...lib.playlists }, plays: { ...lib.plays } };
+      for (const { it, value } of decoded) {
+        const map = next[KIND_KEY[it.kind]] as Record<string, unknown>;
+        if (value === null) delete map[it.id];
+        else map[it.id] = value;
+      }
+      return next;
+    });
+    cursor = res.cursor;
+    await kvSet("cursor", cursor);
+    if (!res.more) break;
+  }
+}
+
+// ---------------- Compartilhamento ----------------
+
+async function refreshShares() {
+  const me = getSession().userId;
+  const { shares } = await api.json<{ shares: ShareInfo[] }>("/shares");
+  const shared: SharedGroup[] = [];
+  const sent: SentShare[] = [];
+  for (const s of shares) {
+    if (s.toUser === me) {
+      try {
+        const payload = JSON.parse(fromUtf8.decode(await eciesOpen(getKeys().privateKey, s.payload))) as SharePayload;
+        for (const t of Object.values(payload.tracks)) {
+          for (const v of Object.values(t.variants)) if (v) v.owner = s.fromUser;
+          if (t.cover) t.cover.owner = s.fromUser;
+        }
+        shared.push({ shareId: s.id, fromUser: s.fromUser, fromEmail: s.fromEmail, ...payload });
+      } catch {
+        /* compartilhamento ilegível: ignora */
+      }
+    } else {
+      sent.push({ shareId: s.id, toEmail: s.toEmail, playlistName: "" });
+    }
+  }
+  // O nome do grupo enviado vem do ID: "<playlistId>.<destinatário>".
+  const lib = libraryStore.get();
+  for (const s of sent) s.playlistName = lib.playlists[s.shareId.split(".")[0]]?.name ?? "(grupo removido)";
+  await kvSet("shared", shared);
+  await kvSet("sent", sent);
+  libraryStore.set((l) => ({ ...l, shared, sent }));
+}
+
+const blobIdsOf = (t: Track) => [...Object.values(t.variants).map((v) => v!.id), ...(t.cover ? [t.cover.id] : [])];
+
+/** Compartilha um grupo (instantâneo). Repetir atualiza o conteúdo para a mesma pessoa. */
+export async function sharePlaylist(playlistId: string, email: string) {
+  const lib = libraryStore.get();
+  const playlist = lib.playlists[playlistId];
+  if (!playlist) throw new Error("Grupo não encontrado");
+  const target = await api.json<{ userId: string; publicKey: string }>(`/users/lookup?email=${encodeURIComponent(email)}`);
+  if (target.userId === getSession().userId) throw new Error("Esse é você 🙂");
+  const tracks: Record<string, Track> = {};
+  for (const id of playlist.trackIds) if (lib.tracks[id]) tracks[id] = lib.tracks[id];
+  const payload: SharePayload = { playlist: { ...playlist, trackIds: Object.keys(tracks) }, tracks };
+  const sealed = await eciesSeal(target.publicKey, utf8.encode(JSON.stringify(payload)));
+  await api.json(`/shares/${playlistId}.${target.userId}`, {
+    method: "PUT",
+    json: { toUser: target.userId, payload: sealed, blobIds: Object.values(tracks).flatMap(blobIdsOf) },
+  });
+  await refreshShares();
+}
+
+export async function unshare(shareId: string) {
+  await api.json(`/shares/${shareId}`, { method: "DELETE" });
+  await refreshShares();
+}
+
+export { blobIdsOf };

@@ -1,0 +1,32 @@
+name = "yfitops"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+# O app web (apps/web/dist) é servido pelo mesmo Worker; /api/* vai para o código.
+[assets]
+directory = "../apps/web/dist"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "yfitops"
+database_id = "COLE_AQUI_O_ID_DO_D1"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "yfitops-music"
+
+[vars]
+# APP_URL: opcional. Sem ele, o link de recuperação usa o endereço do próprio Worker.
+# Remetente do e-mail de recuperação (domínio verificado no Resend).
+MAIL_FROM = "Yfitops <onboarding@resend.dev>"
+# Limite de armazenamento por conta, em GB.
+QUOTA_GB = "50"
+
+# Segredos (wrangler secret put …  /  .dev.vars em desenvolvimento):
+# ESCROW_PRIVATE_KEY, ESCROW_PUBLIC_KEY  → npm run gen-escrow -w server
+# ALLOWED_EMAILS                         → e-mails convidados (vírgula); "@dominio.com" libera o domínio
+# RESEND_API_KEY                         → envio de e-mails (código de cadastro e recuperação);
+#                                          sem ele, os e-mails aparecem só no log

@@ -1,0 +1,1237 @@
+:root {
+  --bg: #fafaf8;
+  --surface: #ffffff;
+  --surface-2: #f1f0ec;
+  --text: #161616;
+  --muted: #77756f;
+  --line: #e6e4de;
+  --accent: #161616;
+  --accent-text: #fafaf8;
+  --danger: #b4412f;
+  --vinyl: #1d1d1d;
+  --vinyl-groove: #2f2f2f;
+  --vinyl-shine: rgba(255, 255, 255, 0.12);
+  /* Tons dos avisos (rótulo do mini vinil). */
+  --brand: #e0a43a;
+  --tone-error: #d9573f;
+  --tone-warn: #e2a72e;
+  --tone-ok: #4f9d69;
+  --radius: 10px;
+  --nav-w: 210px;
+  --bar-h: 64px;
+  --mobile-nav-h: 58px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0f;
+    --surface: #161616;
+    --surface-2: #1e1e1e;
+    --text: #ecebe7;
+    --muted: #8d8b85;
+    --line: #262626;
+    --accent: #ecebe7;
+    --accent-text: #0f0f0f;
+    --danger: #e0735f;
+    --vinyl: #050505;
+    --vinyl-groove: #1c1c1c;
+    --brand: #e8b04f;
+    --tone-error: #ec7a63;
+    --tone-warn: #efc15a;
+    --tone-ok: #6fbf89;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    15px/1.45 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: 1.7rem;
+}
+h2 {
+  font-size: 1.1rem;
+  margin-bottom: 12px;
+}
+h4 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.82rem;
+}
+.error {
+  color: var(--danger);
+  margin: 0;
+}
+.empty {
+  padding: 8px 0 16px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+.row.between {
+  justify-content: space-between;
+}
+
+/* ---------- Estrutura ---------- */
+
+.app {
+  min-height: 100dvh;
+}
+
+.nav {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--nav-w);
+  padding: 22px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-size: 1.15rem;
+  padding: 0 12px 18px;
+}
+
+.nav button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  position: relative;
+}
+.nav button:hover {
+  color: var(--text);
+}
+.nav button.on {
+  color: var(--text);
+  background: var(--surface-2);
+}
+.dot {
+  margin-left: auto;
+  font-size: 0.72rem;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 99px;
+  padding: 0 7px;
+}
+.sync-state {
+  margin-top: auto;
+  padding: 0 12px;
+}
+
+.content {
+  margin-left: var(--nav-w);
+  padding-bottom: 40px;
+}
+.has-player .content {
+  padding-bottom: calc(var(--bar-h) + 40px);
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.section-head h2 {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .nav {
+    inset: auto 0 0 0;
+    width: auto;
+    height: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom));
+    padding: 0 0 env(safe-area-inset-bottom);
+    flex-direction: row;
+    justify-content: space-around;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+    z-index: 20;
+  }
+  .brand,
+  .sync-state {
+    display: none;
+  }
+  .nav button {
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.68rem;
+    padding: 8px 6px;
+    background: none !important;
+  }
+  .dot {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+  }
+  .content {
+    margin-left: 0;
+    padding-bottom: calc(var(--mobile-nav-h) + 24px);
+  }
+  .has-player .content {
+    padding-bottom: calc(var(--mobile-nav-h) + var(--bar-h) + 24px);
+  }
+  .page {
+    padding: 20px 16px;
+    gap: 22px;
+  }
+  .hide-sm {
+    display: none;
+  }
+}
+
+/* ---------- Botões ---------- */
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 99px;
+  padding: 10px 20px;
+  font-weight: 600;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 99px;
+  color: var(--muted);
+  flex: none;
+  position: relative;
+}
+.icon-btn:hover,
+.icon-btn.on {
+  color: var(--text);
+}
+.icon-btn.on::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 99px;
+  background: currentColor;
+}
+.icon-btn.play {
+  color: var(--accent-text);
+  background: var(--accent);
+}
+.icon-btn.play.big {
+  width: 64px;
+  height: 64px;
+}
+.repeat-one {
+  position: absolute;
+  font-size: 0.6rem;
+  font-weight: 700;
+  top: 6px;
+  right: 6px;
+}
+
+.link {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 0.9rem;
+}
+.link:hover {
+  color: var(--text);
+}
+.link.danger {
+  color: var(--danger);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 5px 12px;
+  font-size: 0.85rem;
+  background: var(--surface);
+  white-space: nowrap;
+}
+.chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.chip.ghost {
+  background: none;
+}
+.chip.small {
+  padding: 2px 4px 2px 10px;
+  font-size: 0.8rem;
+}
+.chip.small button {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+.chip-input {
+  border: 0;
+  border-bottom: 1px dashed var(--line);
+  background: none;
+  padding: 5px 4px;
+  min-width: 120px;
+  outline: none;
+  font-size: 0.85rem;
+}
+.suggestions {
+  margin-top: 8px;
+}
+
+select {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}
+
+/* ---------- Formulários ---------- */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form label span {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.form input,
+.search-input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  outline: none;
+}
+.form input:focus,
+.search-input:focus {
+  border-color: var(--text);
+}
+.form .primary {
+  align-self: flex-start;
+}
+
+.search-input {
+  width: 100%;
+  font-size: 1.05rem;
+  padding: 14px 16px;
+}
+
+/* ---------- Capa / vinil ---------- */
+
+.cover {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-2);
+  flex: none;
+}
+.cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cover:has(.vinyl) {
+  background: none;
+}
+.vinyl {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.vinyl.spin {
+  animation: spin 3.5s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vinyl.spin {
+    animation: none;
+  }
+}
+
+/* ---------- Listas ---------- */
+
+.tracks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tracks li {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+.tracks li:hover {
+  background: var(--surface-2);
+}
+.tracks li.active .track-title {
+  font-weight: 650;
+}
+.track-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+}
+.track-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.track-title,
+.track-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-sub {
+  font-size: 0.82rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.badge {
+  display: inline-grid;
+  place-items: center;
+}
+.track-time {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+.shelf-item {
+  width: 132px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scroll-snap-align: start;
+}
+.shelf-item .cover {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 18px 14px;
+}
+.grid-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.grid-item .cover {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs button {
+  padding: 8px 14px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs button.on {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.tag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tag-list button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.plain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- Grupo ---------- */
+
+.group-head {
+  display: flex;
+  gap: 24px;
+  align-items: flex-end;
+}
+.group-cover {
+  width: 180px;
+}
+.group-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.group-info h1 {
+  overflow-wrap: anywhere;
+}
+.shared-with {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.edit-bar {
+  gap: 18px;
+}
+@media (max-width: 720px) {
+  .group-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .group-cover {
+    width: 150px;
+  }
+}
+
+/* ---------- Envio ---------- */
+
+.dropzone {
+  border: 1.5px dashed var(--line);
+  border-radius: 16px;
+  padding: 42px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--muted);
+}
+.dropzone strong {
+  color: var(--text);
+}
+.dropzone.over,
+.dropzone:hover {
+  border-color: var(--text);
+}
+
+.link-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.link-import input {
+  flex: 1;
+  min-width: 220px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  outline: none;
+}
+.link-import input:focus {
+  border-color: var(--text);
+}
+.link-import .err {
+  color: var(--danger);
+}
+
+.explain {
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  font-size: 0.9rem;
+}
+.explain summary {
+  cursor: pointer;
+}
+.explain ul {
+  padding-left: 18px;
+  margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.jobs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.job {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.job.err .track-sub {
+  color: var(--danger);
+}
+.job-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.progress {
+  height: 3px;
+  background: var(--line);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.progress > div {
+  height: 100%;
+  background: var(--text);
+  transition: width 0.2s;
+}
+
+/* ---------- Ajustes ---------- */
+
+.settings section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.settings p {
+  margin: 0;
+}
+.settings .progress {
+  width: 100%;
+  max-width: 360px;
+}
+.radio {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.radio input {
+  margin-top: 4px;
+  accent-color: var(--text);
+}
+.radio span {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- Player ---------- */
+
+.player-bar {
+  position: fixed;
+  left: var(--nav-w);
+  right: 0;
+  bottom: 0;
+  height: var(--bar-h);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  z-index: 15;
+}
+.bar-progress {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--text);
+}
+.bar-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bar-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+@media (max-width: 720px) {
+  .player-bar {
+    left: 0;
+    bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom));
+    padding: 0 10px;
+  }
+}
+
+.full-player {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  animation: rise 0.2s ease-out;
+}
+@keyframes rise {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+}
+.full-player header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+}
+.fp-body {
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 8px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.fp-cover {
+  width: 100%;
+  border-radius: 10px;
+}
+.fp-meta h2 {
+  font-size: 1.4rem;
+  margin: 0 0 2px;
+}
+.fp-meta p {
+  margin: 0;
+}
+.fp-seek input {
+  width: 100%;
+  accent-color: var(--text);
+}
+.fp-times {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+.fp-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.fp-queue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fp-queue button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 7px 0;
+  min-width: 0;
+}
+
+/* ---------- Ficha da música ---------- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 40;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+}
+.sheet {
+  background: var(--bg);
+  width: 100%;
+  max-width: 560px;
+  max-height: 88dvh;
+  overflow-y: auto;
+  border-radius: 16px 16px 0 0;
+  padding: 20px 20px calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  animation: rise 0.18s ease-out;
+}
+@media (min-width: 721px) {
+  .sheet-backdrop {
+    align-items: center;
+  }
+  .sheet {
+    border-radius: 16px;
+  }
+}
+.sheet-head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.sheet-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cover-edit {
+  position: relative;
+}
+.cover-hint {
+  position: absolute;
+  inset: auto 0 0 0;
+  font-size: 0.7rem;
+  text-align: center;
+  padding: 3px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 0 0 6px 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.cover-edit:hover .cover-hint {
+  opacity: 1;
+}
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sheet-actions button {
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 7px 14px;
+  font-size: 0.88rem;
+}
+.sheet-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+/* ---------- Entrada ---------- */
+
+.auth {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px 16px;
+}
+.auth-logo {
+  width: 84px;
+}
+.auth h1 {
+  font-size: 1.5rem;
+  letter-spacing: -0.03em;
+}
+.auth-form {
+  width: 100%;
+  max-width: 320px;
+}
+.auth-form .primary {
+  align-self: stretch;
+}
+.auth-links {
+  display: flex;
+  gap: 16px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.welcome {
+  align-items: flex-start;
+  padding-top: 18vh;
+}
+.welcome p {
+  margin: 0;
+  max-width: 420px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--bar-h) + 24px);
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: calc(100vw - 32px);
+  animation: toast-in 0.22s ease-out;
+}
+.toast .notice {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: transparent;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+@media (max-width: 720px) {
+  .toast {
+    bottom: calc(var(--mobile-nav-h) + var(--bar-h) + 16px);
+  }
+}
+
+/* ---------- Avisos (mini vinil colorido) ---------- */
+
+.notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 6px 14px 6px 6px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 0.86rem;
+  line-height: 1.3;
+  color: var(--text);
+  animation: notice-in 0.2s ease-out;
+}
+/* Dentro de um <label>, o texto não herda o estilo de rótulo. */
+.form label .notice span {
+  font-size: inherit;
+  color: inherit;
+}
+.notice-disc {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: block;
+  animation: needle-drop 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.notice.error .notice-disc {
+  animation:
+    needle-drop 0.6s cubic-bezier(0.2, 0.8, 0.3, 1),
+    wobble 0.35s 0.6s ease-in-out;
+}
+@keyframes needle-drop {
+  from {
+    transform: rotate(-200deg) scale(0.6);
+    opacity: 0;
+  }
+}
+@keyframes wobble {
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice,
+  .notice-disc,
+  .toast {
+    animation: none !important;
+  }
+}
+
+.form input.tone-error {
+  border-color: var(--tone-error);
+}
+.form input.tone-warn {
+  border-color: var(--tone-warn);
+}
+.form input.tone-ok {
+  border-color: var(--tone-ok);
+}
+.form input.code-input {
+  font-size: 1.4rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Marca: vinil girando ao lado do nome ---------- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand-disc {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: block;
+}
+/* Gira devagar com o app aberto; no ritmo de um disco quando há música tocando. */
+.brand-disc .vinyl.spin {
+  animation-duration: 9s;
+}
+.brand-disc.playing .vinyl.spin {
+  animation-duration: 1.8s;
+}
+.auth-logo .vinyl.spin {
+  animation-duration: 9s;
+}
+.mobile-brand {
+  display: none;
+}
+@media (max-width: 720px) {
+  .mobile-brand {
+    display: block;
+    padding: 14px 16px 0;
+  }
+  .mobile-brand .brand {
+    display: flex;
+    padding: 0;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* ---------- Capa com o vinil saindo (tocando) ---------- */
+
+.sleeve {
+  position: relative;
+  aspect-ratio: 1;
+  flex: none;
+  transition: margin-right 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.sleeve .cover {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  box-shadow: 3px 0 8px rgba(0, 0, 0, 0.22);
+}
+.sleeve-disc {
+  position: absolute;
+  inset: 4%;
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.sleeve.out .sleeve-disc {
+  transform: translateX(50%);
+}
+.sleeve:not(.out) .vinyl.spin {
+  animation-play-state: paused;
+}
+/* Abre espaço para a metade do disco que aparece (barra do player). */
+.sleeve.out[style] {
+  margin-right: calc(var(--s) * 0.42);
+}
+/* Player em tela cheia: capa um pouco menor para caber a metade do disco. */
+.fp-cover.sleeve {
+  width: 66%;
+  align-self: flex-start;
+  margin-left: 2%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sleeve,
+  .sleeve-disc {
+    transition: none;
+  }
+}
+
+/* ---------- Menu de download (qualidade) ---------- */
+
+.dl {
+  position: relative;
+}
+.dl-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dl .dl-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 45;
+  min-width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  animation: notice-in 0.15s ease-out;
+}
+.dl .dl-menu button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  font-size: 0.9rem;
+  text-align: left;
+  width: 100%;
+}
+.dl .dl-menu button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.dl .dl-menu button:disabled {
+  opacity: 1;
+}
+.dl .dl-menu button:disabled .dl-name {
+  color: var(--muted);
+}
+.dl-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 550;
+}
+.dl .dl-menu .danger .dl-name {
+  color: var(--danger);
+  font-weight: 450;
+}
+
+@media (max-width: 720px) {
+  /* No celular o nome fica no topo (.mobile-brand), não na barra de baixo. */
+  .nav .brand {
+    display: none;
+  }
+}

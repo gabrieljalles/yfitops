@@ -1,0 +1,22 @@
+{
+  "name": "yfitops",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "server"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "test": "npm test -w packages/core",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "deploy": "npm run build && npm run deploy -w server",
+    "e2e": "node scripts/e2e-browser.mjs",
+    "e2e:formats": "node scripts/e2e-formats.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.49.1"
+  }
+}

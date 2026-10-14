@@ -1,0 +1,14 @@
+{
+  "name": "@yfitops/resolver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Servidor mínimo que resolve links de playlist do YouTube em URLs de áudio para o app importar.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "yt-dlp-wrap": "^2.3.12"
+  }
+}
