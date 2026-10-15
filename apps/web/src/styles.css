@@ -643,6 +643,128 @@ select {
   margin-bottom: 6px;
 }
 
+/* ---------- Capa de playlist: capas empilhadas, o vinil sai da da frente ---------- */
+
+.crate {
+  position: relative;
+  isolation: isolate;
+  aspect-ratio: 1;
+  /* Espaço para as capas de trás aparecerem por cima e à esquerda. */
+  width: 88%;
+  margin: 12% 0 10px 9%;
+}
+.crate .cover {
+  margin: 0;
+}
+.crate-back,
+.crate-front {
+  position: absolute;
+  inset: 0;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.crate-back {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  filter: brightness(0.6);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.crate-back.b1 {
+  transform: translate(-5%, -6%);
+}
+.crate-back.b2 {
+  transform: translate(-10%, -12%);
+  filter: brightness(0.42);
+}
+.crate-front .cover {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.45s;
+}
+.crate .cover.blank {
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 2.6rem;
+  font-weight: 700;
+}
+.crate-disc {
+  position: absolute;
+  inset: 5%;
+  border-radius: 50%;
+  /* Borda leve: o disco preto não some no fundo escuro. */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 4px 10px rgba(0, 0, 0, 0.5);
+  transition: transform 0.6s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+/* Sombra no chão: fica menor e mais fraca quando a capa sobe. */
+.crate::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 4%;
+  right: 4%;
+  bottom: -7px;
+  height: 12px;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.5), transparent 70%);
+  transition: transform 0.45s, opacity 0.45s;
+}
+.grid-item {
+  position: relative;
+}
+.grid-item:focus-visible {
+  z-index: 2;
+}
+.grid-item:focus-visible .crate-front {
+  transform: translateY(-8%) scale(1.06);
+}
+.grid-item:focus-visible .crate-front .cover {
+  box-shadow: 0 22px 26px -10px rgba(0, 0, 0, 0.65);
+}
+.grid-item:focus-visible .crate-disc {
+  transform: translateY(-56%) rotate(-160deg);
+}
+.grid-item:focus-visible .crate::after {
+  transform: scaleX(0.8);
+  opacity: 0.45;
+}
+@media (hover: hover) {
+  .grid-item:hover {
+    z-index: 2;
+  }
+  .grid-item:hover .crate-front {
+    transform: translateY(-8%) scale(1.06);
+  }
+  .grid-item:hover .crate-front .cover {
+    box-shadow: 0 22px 26px -10px rgba(0, 0, 0, 0.65);
+  }
+  .grid-item:hover .crate-disc {
+    transform: translateY(-56%) rotate(-160deg);
+  }
+  .grid-item:hover .crate::after {
+    transform: scaleX(0.8);
+    opacity: 0.45;
+  }
+  /* As de trás se abrem um pouco, como num leque. */
+  .grid-item:hover .crate-back.b1 {
+    transform: translate(-7%, -7%) rotate(-2deg);
+  }
+  .grid-item:hover .crate-back.b2 {
+    transform: translate(-13%, -13%) rotate(-4deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .crate-back,
+  .crate-front,
+  .crate-front .cover,
+  .crate-disc,
+  .crate::after {
+    transition: none;
+  }
+}
+
 .tabs {
   display: flex;
   gap: 4px;

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
+import type { BlobRef } from "@yfitops/core";
 import { musicas } from "../lib/tracks";
-import { Cover } from "../components/Cover";
+import { Cover, Crate } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { promptDialog } from "../lib/dialog";
 import { createPlaylist, favoriteIds, forgottenIds, getTrackFrom, libraryStore, mostPlayedIds, recentTrackIds } from "../lib/library";
@@ -107,10 +108,15 @@ export function GroupGrid({
   return (
     <div className="grid">
       {items.map((g) => {
-        const first = g.trackIds.map((id) => getTrackFrom(lib, id)).find((t) => t?.cover);
+        // Até 3 capas diferentes (a mesma capa repetida não forma pilha).
+        const covers: BlobRef[] = [];
+        for (const id of g.trackIds) {
+          const c = getTrackFrom(lib, id)?.cover;
+          if (c && !covers.some((x) => x.id === c.id) && covers.push(c) === 3) break;
+        }
         return (
           <button key={g.key} className="grid-item" onClick={() => navigate(g.href)}>
-            <Cover cover={first?.cover} seed={g.name} />
+            <Crate covers={covers} seed={g.name} />
             <span className="track-title">{g.name}</span>
             <span className="track-sub">{g.sub}</span>
           </button>

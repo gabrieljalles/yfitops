@@ -41,6 +41,69 @@ export function Vinyl({
   );
 }
 
+/** Endereço local da capa (carrega quando muda). */
+function useCoverSrc(cover?: BlobRef): string | null {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setSrc(null);
+    if (cover) coverUrl(cover).then((u) => alive && setSrc(u), () => {});
+    return () => {
+      alive = false;
+    };
+  }, [cover?.id]);
+  return src;
+}
+
+/**
+ * Capa de playlist: as capas das primeiras músicas empilhadas, uma atrás da outra,
+ * como discos num caixote. Ao passar o mouse, a da frente sobe do chão e o vinil
+ * sai de dentro dela (só CSS; ver .crate).
+ */
+export function Crate({ covers, seed }: { covers: BlobRef[]; seed: string }) {
+  const [front, ...back] = covers;
+  const src = useCoverSrc(front);
+  const [tint, setTint] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setTint(null);
+    if (src && front) dominantColor(front.id, src).then((c) => alive && setTint(c));
+    return () => {
+      alive = false;
+    };
+  }, [src, front?.id]);
+  const h = hue(seed);
+  // Sem capas suficientes, as de trás são capas lisas no tom da playlist.
+  const backs = [0, 1].map((i) => back[i]);
+  return (
+    <div className="crate">
+      {backs
+        .map((c, i) =>
+          c ? (
+            <Cover key={i} cover={c} seed={seed} className={`crate-back b${i + 1}`} />
+          ) : (
+            <div key={i} className={`crate-back b${i + 1} blank`} style={{ background: `hsl(${(h + 40 * (i + 1)) % 360} 22% 34%)` }} />
+          ),
+        )
+        .reverse()}
+      <div className="crate-front">
+        <div className="crate-disc">
+          <Vinyl seed={seed} label={tint ?? undefined} />
+        </div>
+        {src ? (
+          <div className="cover">
+            <img src={src} alt="" loading="lazy" />
+          </div>
+        ) : (
+          <div className="cover blank" style={{ background: `hsl(${h} 30% 42%)` }}>
+            <span>{seed.trim().charAt(0).toUpperCase()}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Cover({
   cover,
   seed,
@@ -57,16 +120,8 @@ export function Cover({
   sleeve?: boolean;
   className?: string;
 }) {
-  const [src, setSrc] = useState<string | null>(null);
+  const src = useCoverSrc(cover);
   const [tint, setTint] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    setSrc(null);
-    if (cover) coverUrl(cover).then((u) => alive && setSrc(u), () => {});
-    return () => {
-      alive = false;
-    };
-  }, [cover?.id]);
   // Com capa, o rótulo do vinil que sai dela ganha a cor predominante da capa.
   useEffect(() => {
     let alive = true;
