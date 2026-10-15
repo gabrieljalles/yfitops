@@ -41,6 +41,9 @@ export async function nativeFetch(input: RequestInfo | URL, init: RequestInit = 
   const method = (init.method ?? req?.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = {};
   new Headers(init.headers ?? req?.headers).forEach((v, k) => (headers[k] = v));
+  // Sem User-Agent, o Android manda o dele ("Dalvik/...") e o YouTube responde
+  // "confirme que não é um robô". O do próprio WebView passa.
+  headers["user-agent"] ??= navigator.userAgent;
   let data: unknown = init.body ?? undefined;
   if (data !== undefined && typeof data !== "string") data = await new Response(data as BodyInit).text();
   // JSON vai como objeto: o lado nativo serializa de novo (string viraria texto com aspas).
@@ -55,12 +58,13 @@ export async function nativeFetch(input: RequestInfo | URL, init: RequestInit = 
   const out = new Headers();
   for (const [k, v] of Object.entries(res.headers ?? {})) out.set(k, Array.isArray(v) ? v.join(", ") : String(v));
   // O lado nativo só respeita o "arraybuffer" (base64) em respostas de sucesso que não
-  // são JSON: JSON chega já lido (objeto) e erro chega como texto.
+  // são JSON. JSON chega já lido (objeto), a não ser que não dê para ler: aí chega o
+  // texto cru (ex.: o ")]}'" na frente do JSON do YouTube) e vai como veio. Erro chega como texto.
   const json = /json/i.test(out.get("content-type") ?? "");
   const body =
     res.status < 400 && !json && typeof res.data === "string"
       ? fromB64(res.data.replace(/\s+/g, ""))
-      : new TextEncoder().encode(typeof res.data === "string" && !json ? res.data : res.data === undefined ? "" : JSON.stringify(res.data));
+      : new TextEncoder().encode(typeof res.data === "string" ? res.data : res.data === undefined ? "" : JSON.stringify(res.data));
   const empty = [101, 204, 205, 304].includes(res.status);
   return new Response(empty ? null : body, { status: res.status, headers: out });
 }

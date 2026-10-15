@@ -53,7 +53,9 @@ function youtube(): Promise<Innertube> {
       Log.setLevel(Log.Level.NONE);
       // O player do YouTube embaralha os links do áudio; desembaralhar é rodar o código dele.
       Platform.shim.eval = async (data: { output: string }) => new Function(data.output)();
-      return Innertube.create({ fetch: nativeFetch, generate_session_locally: true, retrieve_player: true });
+      // A sessão vem do YouTube (visitorData de verdade): inventada localmente, ele pede
+      // "confirme que não é um robô" em todo download.
+      return Innertube.create({ fetch: nativeFetch, generate_session_locally: false, retrieve_player: true });
     })();
     yt = { at: Date.now(), client };
     client.catch(() => (yt = null));
@@ -216,9 +218,11 @@ export interface Downloaded {
 
 /**
  * Modos do YouTube que entregam o áudio inteiro sem "prova de origem" (PO
- * token). O primeiro que funcionar ganha; os outros são reserva.
+ * token). O primeiro que funcionar ganha; os outros são reserva. Sem o PO token,
+ * o ANDROID_VR e o TV só entregam o 1º MB (o resto volta 403); o VISIONOS
+ * (Apple Vision Pro) ainda entrega tudo.
  */
-const CLIENTS = ["ANDROID_VR", "TV"] as const;
+const CLIENTS = ["VISIONOS", "ANDROID_VR", "TV"] as const;
 /** Em pedaços: pedido único inteiro o YouTube limita à velocidade de reprodução. */
 const CHUNK = 10 * 1024 * 1024;
 
@@ -250,8 +254,9 @@ export async function downloadAudio(videoId: string): Promise<Downloaded> {
       const ps = info.playability_status;
       if (ps?.status && ps.status !== "OK") {
         const reason = ps.reason ?? ps.status;
-        if (/bot/i.test(reason)) throw new SourceError("O YouTube pediu para confirmar que não é um robô", "limit");
-        if (/age|idade/i.test(reason)) throw new SourceError("Vídeo com restrição de idade", "gone");
+        if (/\bbot\b/i.test(reason)) throw new SourceError("O YouTube pediu para confirmar que não é um robô", "limit");
+        // Palavra inteira: "The page needs to be reloaded" não é restrição de idade.
+        if (/\bage\b|age-restricted|idade/i.test(reason)) throw new SourceError("Vídeo com restrição de idade", "gone");
         throw new SourceError(reason, ps.status === "LOGIN_REQUIRED" ? "temp" : "gone");
       }
       const audio = (info.streaming_data?.adaptive_formats ?? []).filter((f) => f.has_audio && !f.has_video);
@@ -277,9 +282,13 @@ export async function downloadAudio(videoId: string): Promise<Downloaded> {
         duration: info.basic_info.duration ?? 0,
       };
     } catch (e) {
-      last = e instanceof SourceError ? e : classify(e);
-      // Não existe: não adianta outro modo.
-      if (last.kind === "gone") throw last;
+      const err = e instanceof SourceError ? e : classify(e);
+      if (!last) {
+        // Não existe: não adianta outro modo.
+        if (err.kind === "gone") throw err;
+        last = err;
+      } else if (err.kind === "limit") last = err;
+      // Um modo reserva estranhar ("The page needs to be reloaded") não apaga o motivo do principal.
     }
   }
   throw last ?? new SourceError("Não consegui baixar", "temp");
@@ -302,7 +311,7 @@ async function chunk(url: string): Promise<Response> {
 
 function classify(e: unknown): SourceError {
   const msg = String((e as Error)?.message ?? e);
-  if (/bot/i.test(msg)) return new SourceError("O YouTube pediu para confirmar que não é um robô", "limit");
+  if (/\bbot\b/i.test(msg)) return new SourceError("O YouTube pediu para confirmar que não é um robô", "limit");
   if (/unavailable|private|removed|not available|indispon/i.test(msg)) return new SourceError("Vídeo indisponível", "gone");
   return new SourceError(msg.slice(0, 200) || "Erro ao falar com o YouTube", "temp");
 }

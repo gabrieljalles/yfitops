@@ -132,7 +132,9 @@ try {
   await desk.goto(URL + "#/enviar");
   await desk.getByPlaceholder("ou cole um link").fill(LINK);
   await desk.getByRole("button", { name: "pedir", exact: true }).click();
-  await desk.getByRole("button", { name: "pedir e criar a playlist" }).click();
+  // Álbum/playlist pergunta se cria a playlist; vídeo único vai direto.
+  const asPlaylist = desk.getByRole("button", { name: "pedir e criar a playlist" });
+  await Promise.race([asPlaylist.click().catch(() => {}), desk.locator(".request").waitFor()]);
   await desk.locator(".request").waitFor();
   const t0 = Date.now();
   let last = "";
