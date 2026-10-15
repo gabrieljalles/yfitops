@@ -162,12 +162,14 @@ try {
   await phone.goto(base + "#/buscar");
   await phone.locator('input[type="search"]').fill(process.env.QUEUE_SEARCH ?? "Singular");
   await phone.getByTitle("Adicionar e tocar").first().click({ timeout: 30000 });
-  await phone.waitForFunction(() => document.querySelector("audio")?.paused === false || [...document.querySelectorAll("audio")].some((a) => !a.paused), null, { timeout: 30000 });
+  // O player usa "new Audio()" fora da página: quem diz se está tocando é o botão Pausar
+  // e, com a tela desligada, o próprio Android (dumpsys audio).
+  await phone.locator('button[title="Pausar"]').first().waitFor({ timeout: 30000 });
   await sleep(1500);
   console.log("    tocando; serviço:", service());
   adb("shell", "input", "keyevent", "KEYCODE_SLEEP");
   await sleep(8000);
-  const playing = await phone.evaluate(() => [...document.querySelectorAll("audio")].some((a) => !a.paused)).catch(() => "sem resposta");
+  const playing = /state:started/.test(adb("shell", "dumpsys", "audio")) ? "sim" : "não";
   console.log("    tela desligada há 8 s; ainda tocando:", playing, "· serviço:", service(), "·", await status());
   adb("shell", "input", "keyevent", "KEYCODE_WAKEUP");
   // Pausou: o serviço sai e o celular para de ajudar (se estiver fora da tela).
