@@ -1,11 +1,20 @@
 import { getTrackFrom, libraryStore } from "../lib/library";
 import { useStore } from "../lib/observable";
-import { cycleRepeat, jumpTo, next, playerStore, prev, seek, toggle, toggleShuffle } from "../lib/player";
+import { cycleRepeat, jumpTo, next, playerStore, prev, seek, toggle, toggleShuffle, type PlayerState } from "../lib/player";
 import { formatTime } from "../lib/tracks";
 import { openTrack, uiStore } from "../lib/ui";
 import { Cover } from "./Cover";
 import { FavoriteButton } from "./FavoriteButton";
 import { Icon } from "./Icon";
+
+/** Enquanto a música carrega: "baixando… 42%" (não está no aparelho) ou "carregando…". Curto: cabe no celular. */
+function loadingText(p: PlayerState): string | null {
+  if (!p.loading) return null;
+  return p.progress != null ? `baixando… ${Math.round(p.progress * 100)}%` : "carregando…";
+}
+
+/** Há próxima na fila? (Tocou uma só, pela busca: não há, e o botão fica apagado.) */
+const hasNext = (p: PlayerState) => p.index + 1 < p.queue.length || (p.repeat === "all" && p.queue.length > 1);
 
 function useCurrent() {
   const p = useStore(playerStore);
@@ -25,7 +34,7 @@ export function PlayerBar() {
         <Cover cover={track.cover} seed={track.title + track.artist} size={42} spinning={p.playing} sleeve />
         <span className="track-text">
           <span className="track-title">{track.title}</span>
-          <span className="track-sub">{p.error ?? (p.loading ? "carregando…" : track.artist || "Artista desconhecido")}</span>
+          <span className="track-sub">{p.error ?? loadingText(p) ?? (track.artist || "Artista desconhecido")}</span>
         </span>
       </button>
       <div className="bar-controls">
@@ -33,10 +42,10 @@ export function PlayerBar() {
         <button className="icon-btn hide-sm" onClick={prev} title="Anterior">
           <Icon name="prev" />
         </button>
-        <button className="icon-btn play" onClick={toggle} title={p.playing ? "Pausar" : "Tocar"}>
+        <button className={`icon-btn play${p.loading ? " loading" : ""}`} onClick={toggle} title={p.playing ? "Pausar" : "Tocar"}>
           <Icon name={p.playing ? "pause" : "play"} size={22} />
         </button>
-        <button className="icon-btn" onClick={() => next()} title="Próxima">
+        <button className="icon-btn" onClick={() => next()} disabled={!hasNext(p)} title={hasNext(p) ? "Próxima" : "Não há próxima na fila"}>
           <Icon name="next" />
         </button>
       </div>
@@ -69,7 +78,15 @@ export function FullPlayer() {
             <FavoriteButton id={id} size={24} />
           </div>
           <p className="muted">{[track.artist, track.album].filter(Boolean).join(" · ") || "Artista desconhecido"}</p>
-          {p.error && <p className="error">{p.error}</p>}
+          {p.error ? (
+            <p className="error">{p.error}</p>
+          ) : (
+            p.loading && (
+              <p className="muted small" role="status">
+                {loadingText(p)}
+              </p>
+            )
+          )}
         </div>
         <div className="fp-seek">
           <input
@@ -94,10 +111,10 @@ export function FullPlayer() {
           <button className="icon-btn" onClick={prev} title="Anterior">
             <Icon name="prev" size={28} />
           </button>
-          <button className="icon-btn play big" onClick={toggle} title={p.playing ? "Pausar" : "Tocar"}>
+          <button className={`icon-btn play big${p.loading ? " loading" : ""}`} onClick={toggle} title={p.playing ? "Pausar" : "Tocar"}>
             <Icon name={p.playing ? "pause" : "play"} size={32} />
           </button>
-          <button className="icon-btn" onClick={() => next()} title="Próxima">
+          <button className="icon-btn" onClick={() => next()} disabled={!hasNext(p)} title={hasNext(p) ? "Próxima" : "Não há próxima na fila"}>
             <Icon name="next" size={28} />
           </button>
           <button className={`icon-btn${p.repeat !== "off" ? " on" : ""}`} onClick={cycleRepeat} title={`Repetir: ${p.repeat}`}>

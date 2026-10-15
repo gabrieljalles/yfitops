@@ -175,9 +175,12 @@ try {
   console.log("    tela desligada há 8 s; ainda tocando:", playing, "· serviço:", service(), "·", await status());
   adb("shell", "input", "keyevent", "KEYCODE_WAKEUP");
   // Pausou: o serviço sai e o celular para de ajudar (se estiver fora da tela).
-  await phone.locator('button[title="Pausar"]').first().click();
+  // (Com som no emulador, a música de teste de 40 s pode ter acabado: aí já parou sozinha.)
+  const pause = phone.locator('button[title="Pausar"]').first();
+  if (await pause.isVisible()) await pause.click();
+  else console.log("    a música de teste já tinha acabado");
   await sleep(2000);
-  console.log("    pausado; serviço:", service());
+  console.log("    parado; serviço:", service());
 } catch (e) {
   failed = true;
   console.error("FALHOU:", e.message);

@@ -9,6 +9,8 @@ export interface PlayerState {
   index: number;
   playing: boolean;
   loading: boolean;
+  /** Baixando a música para tocar: quanto já chegou (0 a 1); null se não está baixando. */
+  progress: number | null;
   time: number;
   duration: number;
   shuffle: boolean;
@@ -21,6 +23,7 @@ export const playerStore = createStore<PlayerState>({
   index: -1,
   playing: false,
   loading: false,
+  progress: null,
   time: 0,
   duration: 0,
   shuffle: false,
@@ -105,11 +108,11 @@ function remember(id: string, url: string) {
   }
 }
 
-async function urlFor(id: string, ref: BlobRef): Promise<string> {
+async function urlFor(id: string, ref: BlobRef, onProgress?: (fraction: number) => void): Promise<string> {
   const key = `${id}:${ref.id}`;
   const hit = decoded.get(key);
   if (hit) return hit;
-  const bytes = await readBlob(ref);
+  const bytes = await readBlob(ref, false, onProgress);
   const url = URL.createObjectURL(new Blob([bytes], { type: ref.mime.split(";")[0] }));
   remember(key, url);
   return url;
@@ -162,7 +165,7 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
   }
   crossStarted = false;
   prefetched = false;
-  set({ index, loading: true, time: 0, duration: t.duration, error: null });
+  set({ index, loading: true, progress: null, time: 0, duration: t.duration, error: null });
   playedFor = 0;
   lastTick = 0;
   counted = false;
@@ -173,8 +176,13 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
     const unsupported: string[] = [];
     let played = false;
     probing = true;
+    // Não está no aparelho: mostra quanto já baixou (de 1 em 1%, para não redesenhar a cada pedaço).
+    const onProgress = (f: number) => {
+      const pct = Math.floor(f * 100) / 100;
+      if (token === loadToken && pct !== playerStore.get().progress) set({ progress: pct });
+    };
     for (const ref of candidates) {
-      const url = await urlFor(id, ref);
+      const url = await urlFor(id, ref, onProgress);
       if (token !== loadToken) return;
       currentUrl = url;
       try {
@@ -209,7 +217,7 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
   } finally {
     if (token === loadToken) {
       probing = false;
-      set({ loading: false });
+      set({ loading: false, progress: null });
     }
   }
 }

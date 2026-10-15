@@ -77,7 +77,7 @@ export const isOffline = (set: Set<string>, ref: BlobRef | undefined) => Boolean
  * 3. senão, uma requisição só (o arquivo inteiro), que vai para o cache.
  * `keep`: guardar como download offline (sai do cache, não é apagado sozinho).
  */
-async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
+async function fetchSealed(ref: BlobRef, keep: boolean, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
   const d = await db();
   const key = fileKey(ref);
   const saved = await d.get("files", key);
@@ -90,7 +90,7 @@ async function fetchSealed(ref: BlobRef, keep: boolean): Promise<Uint8Array> {
     // Tocou de novo: fica mais tempo (só a anotação muda; o arquivo não é regravado).
     if (!keep) void d.put("cacheMeta", { key, size: hit.size, at: Date.now() }).catch(() => {});
   } else {
-    sealed = await api.bytes(pathOf(ref));
+    sealed = await api.bytes(pathOf(ref), {}, onProgress);
   }
   if (keep) {
     await d.put("files", { key, data: new Blob([sealed]), size: sealed.length, at: Date.now() });
@@ -184,8 +184,9 @@ export async function isLocal(ref: BlobRef): Promise<boolean> {
   return Boolean((await d.getKey("files", fileKey(ref))) ?? (await d.getKey("cache", fileKey(ref))));
 }
 
-export async function readBlob(ref: BlobRef, keep = false): Promise<Uint8Array> {
-  const data = await fetchSealed(ref, keep);
+/** `onProgress`: quanto do arquivo já chegou (0 a 1), se ele precisar ser baixado. */
+export async function readBlob(ref: BlobRef, keep = false, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+  const data = await fetchSealed(ref, keep, onProgress);
   return ref.shared ? data : decryptFile(ref, data);
 }
 
