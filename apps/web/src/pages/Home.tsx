@@ -158,7 +158,7 @@ function Shelf({
             return (
               t && (
                 <button key={id} className="shelf-item" onClick={() => playList(ids, i)}>
-                  <Cover cover={t.cover} seed={t.title + t.artist} />
+                  <Cover cover={t.cover} seed={t.title + t.artist} sleeve />
                   <span className="track-title">{t.title}</span>
                   <span className="track-sub">{t.artist}</span>
                 </button>
