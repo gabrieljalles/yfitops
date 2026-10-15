@@ -1,0 +1,72 @@
+import type { SongInfo } from "./catalog";
+
+// ---------------------------------------------------------------------------
+// Fila de importação por link (YouTube, Spotify, Deezer).
+//
+// Quem pede só manda o link. Um celular Android com o app (APK) aberto, ou
+// tocando música, e no Wi-Fi, lê o link, baixa cada música e envia ao catálogo.
+// Só quem pediu recebe as músicas na biblioteca.
+// ---------------------------------------------------------------------------
+
+/** Uma faixa lida de um link (antes de baixar). */
+export interface ResolvedTrack {
+  /** Vazio nas do Spotify/Deezer até serem procuradas no YouTube. */
+  videoId: string;
+  title: string;
+  artist: string;
+  duration: number;
+  /** Só nas do Spotify/Deezer: o texto procurado no YouTube. */
+  query?: string;
+  album?: string;
+  /** Capa vinda do Spotify/Deezer. */
+  cover?: string;
+  spotifyId?: string;
+  deezerId?: string;
+}
+
+/** Escolhas de quem pediu. */
+export interface ImportOpts {
+  tags?: string[];
+  /** Se o link for de uma playlist: as músicas ficam ligadas a uma playlist no app. */
+  playlist?: boolean;
+}
+
+export type ImportTrackStatus = "queued" | "working" | "done" | "failed" | "skipped";
+
+export interface ImportTrackInfo {
+  id: string;
+  pos: number;
+  meta: ResolvedTrack;
+  status: ImportTrackStatus;
+  error?: string;
+  /** A música no catálogo (quando terminou). */
+  song?: SongInfo;
+  delivered: boolean;
+}
+
+export interface ImportRequestInfo {
+  id: string;
+  url: string;
+  opts: ImportOpts;
+  /** queued = esperando um celular ler o link; listing = lendo; listed = músicas na fila; failed. */
+  status: "queued" | "listing" | "listed" | "failed";
+  provider?: string;
+  /** Origem da playlist ("youtube-playlist:<id>"), quando o link era de uma. */
+  source?: string;
+  name?: string;
+  truncated: boolean;
+  error?: string;
+  createdAt: number;
+  tracks: ImportTrackInfo[];
+}
+
+/** O que o servidor entrega a um celular que pede trabalho. */
+export type SpotJob =
+  | { type: "list"; id: string; url: string }
+  | { type: "track"; id: string; requestId: string; meta: ResolvedTrack };
+
+/** Tipo da falha: "limit" = o YouTube barrou este celular (descansa); "gone" = não existe; "temp" = passageira. */
+export type SpotFailKind = "limit" | "gone" | "temp";
+
+/** Hosts aceitos nos links pedidos. */
+export const IMPORT_HOSTS = /(^|\.)(youtube\.com|youtu\.be|spotify\.com|spotify\.link|deezer\.com|deezer\.page\.link|dzr\.page\.link)$/i;

@@ -22,7 +22,8 @@ import { SearchPage } from "./pages/Search";
 import { SettingsPage } from "./pages/Settings";
 import { UploadPage } from "./pages/Upload";
 import { navigate, useRoute } from "./router";
-import { linkImportStore } from "./lib/linkImport";
+import { finished, importsStore, stopImports, watchImports } from "./lib/imports";
+import { startSpot } from "./lib/spot";
 
 // Painel administrativo: só é baixado por quem é administrador.
 const AdminPage = lazy(() => import("./pages/Admin"));
@@ -53,6 +54,10 @@ export function App() {
     void loadLocal().then(syncAll);
     void loadOfflineIndex();
     void keepLocalData();
+    // Pedidos por link: as músicas prontas entram na biblioteca. No app Android,
+    // este celular também ajuda a baixar (no Wi-Fi, com o app aberto ou tocando).
+    watchImports();
+    startSpot();
     // Economia de requisições: o que você muda vai na hora (saveItem); buscar o
     // que mudou em outro aparelho é a cada 5 min com o app aberto e na tela, ou
     // ao voltar para o app (se o último sync tiver mais de 1 min).
@@ -69,6 +74,7 @@ export function App() {
     window.addEventListener("online", onOnline);
     return () => {
       clearInterval(interval);
+      stopImports();
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("online", onOnline);
     };
@@ -128,7 +134,9 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
   const player = useStore(playerStore);
   const jobs = useStore(jobsStore);
   const uploading = jobs.filter((j) => !["pronto", "já existe", "erro"].includes(j.status)).length;
-  const linkImport = useStore(linkImportStore);
+  const imports = useStore(importsStore);
+  /** Links pedidos que ainda não terminaram. */
+  const waiting = imports.requests.filter((r) => !finished(r)).length;
   const session = useStore(sessionStore);
   const requests = useStore(pendingRequestsStore);
   const nav: [string, string, IconName][] = session?.admin ? [...NAV, ["admin", "Painel", "shield"]] : NAV;
@@ -141,10 +149,9 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
           <button key={path} className={section === path ? "on" : ""} onClick={() => navigate(`/${path}`)}>
             <Icon name={icon} />
             <span>{label}</span>
-            {path === "enviar" && (uploading > 0 || linkImport.busy) && (
-              // Importando por link: o ponto aparece mesmo antes de a 1ª música entrar na fila.
-              <span className="dot" title={linkImport.note || undefined}>
-                {uploading || "…"}
+            {path === "enviar" && (uploading > 0 || waiting > 0) && (
+              <span className="dot" title={waiting ? `${waiting} link(s) esperando na fila` : undefined}>
+                {uploading || waiting}
               </span>
             )}
             {path === "admin" && requests > 0 && (

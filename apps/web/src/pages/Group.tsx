@@ -6,9 +6,8 @@ import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
 import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, saveItem, sharePlaylist, sharedTrackId, unshare } from "../lib/library";
 import { confirmDialog, promptDialog } from "../lib/dialog";
-import { linkImportStore, syncPlaylist } from "../lib/linkImport";
+import { finished, importsStore, playlistSyncUrl, requestProgress, syncPlaylist } from "../lib/imports";
 import { useStore } from "../lib/observable";
-import { playlistSyncUrl } from "../lib/resolver";
 import { playList, toggleShuffle, playerStore } from "../lib/player";
 import { attempt, toast } from "../lib/ui";
 import { navigate } from "../router";
@@ -47,9 +46,11 @@ export function GroupPage({ id }: { id: string }) {
   const lib = useStore(libraryStore);
   const p = lib.playlists[id];
   const [editing, setEditing] = useState(false);
-  const importing = useStore(linkImportStore);
+  const imports = useStore(importsStore);
   if (!p) return <div className="page muted">Playlist não encontrada.</div>;
   const syncUrl = playlistSyncUrl(p);
+  /** Sincronização pedida e ainda na fila. */
+  const syncing = syncUrl ? imports.requests.find((r) => r.url === syncUrl && !finished(r)) : undefined;
   const sentTo = lib.sent.filter((s) => s.shareId.startsWith(`${id}.`));
 
   return (
@@ -72,11 +73,11 @@ export function GroupPage({ id }: { id: string }) {
         {syncUrl && (
           <button
             className="chip ghost"
-            disabled={importing.busy}
+            disabled={!!syncing}
             title={`Baixa só as músicas novas de ${syncUrl}`}
             onClick={() => void syncPlaylist(id)}
           >
-            <Icon name="sync" size={14} /> {importing.syncing === id ? "sincronizando…" : "sincronizar"}
+            <Icon name="sync" size={14} /> {syncing ? "na fila…" : "sincronizar"}
           </button>
         )}
         <button className={`chip ghost${editing ? " on" : ""}`} onClick={() => setEditing(!editing)}>
@@ -86,11 +87,9 @@ export function GroupPage({ id }: { id: string }) {
 
       {syncUrl && (
         <p className="muted small sync-note">
-          {importing.syncing === id
-            ? importing.note || "lendo a playlist de origem…"
-            : importing.busy
-              ? "Espere a importação em andamento terminar para sincronizar."
-              : p.syncedAt
+          {syncing
+            ? `Sincronizando: ${requestProgress(syncing)}`
+            : p.syncedAt
                 ? `Importada de ${serviceOf(syncUrl)} · sincronizada ${sinceText(p.syncedAt)}`
                 : `Importada de ${serviceOf(syncUrl)}`}
         </p>

@@ -1,9 +1,9 @@
 // Descobrir o artista de uma música quando o arquivo não traz.
 //
 // Ordem: o que veio da origem (Spotify/YouTube) → "Artista - Título" no nome →
-// busca pelo título no resolver (Spotify, Deezer, iTunes) → "Artista desconhecido".
+// busca pelo título no servidor (Deezer, iTunes) → "Artista desconhecido".
 
-import { resolverFetch } from "./resolverConn";
+import { api } from "./api";
 
 /** Quando nada encontrou o artista com segurança. */
 export const UNKNOWN_ARTIST = "Artista desconhecido";
@@ -26,19 +26,13 @@ export function splitArtistTitle(text: string): { artist: string; title: string 
 }
 
 /**
- * Pergunta ao resolver quem canta essa música. Devolve "" se não achou com
- * segurança, ou se o resolver estiver desligado (aí fica "Artista desconhecido").
+ * Pergunta ao servidor quem canta essa música. Devolve "" se não achou com
+ * segurança, ou sem conexão (aí fica "Artista desconhecido").
  */
 export async function lookupArtist(title: string): Promise<string> {
   if (!title.trim()) return "";
   try {
-    const r = await resolverFetch("/resolve/artist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title }),
-    });
-    if (!r.ok) return "";
-    const { artist } = (await r.json()) as { artist?: string };
+    const { artist } = await api.json<{ artist?: string }>(`/lookup/artist?title=${encodeURIComponent(title)}`);
     return artist?.trim() ?? "";
   } catch {
     return "";

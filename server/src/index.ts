@@ -12,8 +12,15 @@ import {
   searchText,
   sha256,
   toB64,
+  IMPORT_HOSTS,
+  type ImportOpts,
+  type ImportRequestInfo,
+  type ImportTrackStatus,
   type ItemKind,
+  type ResolvedTrack,
   type ShareInfo,
+  type SpotFailKind,
+  type SpotJob,
   type SignupRequest,
   type SongInfo,
   type SongQuery,
@@ -841,6 +848,13 @@ async function tidyCatalog(env: Env) {
       merged++;
     }
   }
+  // Pedidos de importação esquecidos (mais de 30 dias) e celulares que não aparecem há uma semana.
+  const month = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM import_tracks WHERE request_id IN (SELECT id FROM import_requests WHERE created_at < ?)").bind(month),
+    env.DB.prepare("DELETE FROM import_requests WHERE created_at < ?").bind(month),
+    env.DB.prepare("DELETE FROM import_devices WHERE last_seen < ?").bind(Date.now() - 7 * 24 * 60 * 60 * 1000),
+  ]);
   console.log(`faxina do catálogo: ${stale.length} envios abandonados, ${merged} duplicadas juntadas`);
   return { abandoned: stale.length, merged };
 }
@@ -865,6 +879,9 @@ async function deleteUser(env: Env, id: string) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM share_blobs WHERE share_id IN (SELECT id FROM shares WHERE from_user = ?1 OR to_user = ?1)").bind(id),
     env.DB.prepare("DELETE FROM shares WHERE from_user = ?1 OR to_user = ?1").bind(id),
+    env.DB.prepare("DELETE FROM import_tracks WHERE request_id IN (SELECT id FROM import_requests WHERE user_id = ?)").bind(id),
+    env.DB.prepare("DELETE FROM import_requests WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM import_devices WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM items WHERE owner = ?").bind(id),
     env.DB.prepare("DELETE FROM blobs WHERE owner = ?").bind(id),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
@@ -1049,6 +1066,449 @@ app.post("/admin/consumption", async (c) => {
     app: await usage(env),
     errors: (body.errors ?? []).map((e) => `${(e.path ?? []).join(".")}: ${e.message}`),
   });
+});
+
+// ---------------- Fila de importação por link ----------------
+// Quem pede só manda o link. Celulares Android com o app aberto (ou tocando
+// música) e no Wi-Fi pedem trabalho aqui: primeiro ler o link (vira uma música
+// por linha), depois baixar cada música e enviar ao catálogo. Revezam: quem
+// acabou de baixar passa a vez para o celular que espera há mais tempo.
+
+/** Celular que não pediu trabalho nesse tempo saiu (fechou o app, parou a música, saiu do Wi-Fi). */
+const SPOT_ACTIVE = 90_000;
+/** Download que não terminou nesse tempo volta para a fila (o celular saiu no meio). */
+const SPOT_STALE = 10 * 60_000;
+/** Tentativas por música antes de desistir. */
+const SPOT_ATTEMPTS = 3;
+/** O YouTube barrou o celular: ele descansa esse tempo e os outros seguem. */
+const SPOT_REST = 30 * 60_000;
+/** Pedidos em aberto por pessoa, e músicas por link. */
+const MAX_OPEN_REQUESTS = 20;
+const MAX_LINK_TRACKS = 300;
+const DEVICE_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+function checkDevice(id: unknown): string {
+  if (typeof id !== "string" || !DEVICE_RE.test(id)) fail(400, "Aparelho inválido");
+  return id;
+}
+
+/** Faixa lida de um link, só com os campos esperados e tamanhos limitados. */
+function cleanTrack(m: Partial<ResolvedTrack>): ResolvedTrack {
+  const id = (v: unknown) => (typeof v === "string" && /^[\w-]{1,64}$/.test(v) ? v : undefined);
+  const url = (v: unknown) => (typeof v === "string" && /^https:\/\/[\w.-]+\/\S{1,500}$/.test(v) ? v : undefined);
+  const t: ResolvedTrack = {
+    videoId: id(m.videoId) ?? "",
+    title: text(m.title) || "Faixa sem título",
+    artist: text(m.artist),
+    duration: Math.max(0, Number(m.duration) || 0),
+  };
+  const query = text(m.query);
+  const album = text(m.album);
+  const cover = url(m.cover);
+  const spotifyId = id(m.spotifyId);
+  const deezerId = id(m.deezerId);
+  return {
+    ...t,
+    ...(query && { query }),
+    ...(album && { album }),
+    ...(cover && { cover }),
+    ...(spotifyId && { spotifyId }),
+    ...(deezerId && { deezerId }),
+  };
+}
+
+/** Pede a importação de um link. */
+app.post("/imports", async (c) => {
+  const body = await c.req.json<{ url: string; opts?: ImportOpts }>();
+  const url = text(body.url, 600);
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* inválido */
+  }
+  if (!IMPORT_HOSTS.test(host)) fail(400, "Só aceitamos links do YouTube, do Spotify ou do Deezer");
+  const tags = Array.isArray(body.opts?.tags)
+    ? body.opts.tags
+        .filter((t) => typeof t === "string")
+        .map((t) => text(t, 40))
+        .slice(0, 20)
+    : [];
+  const opts: ImportOpts = { tags, playlist: body.opts?.playlist !== false };
+  const open = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM import_requests WHERE user_id = ?").bind(c.get("userId")).first<{ n: number }>();
+  if ((open?.n ?? 0) >= MAX_OPEN_REQUESTS) fail(429, `Você já tem ${MAX_OPEN_REQUESTS} links na fila. Espere alguns terminarem.`);
+  const id = randomId();
+  await c.env.DB.prepare("INSERT INTO import_requests (id, user_id, url, opts, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(id, c.get("userId"), url, JSON.stringify(opts), Date.now())
+    .run();
+  return c.json({ id });
+});
+
+type RequestRow = {
+  id: string;
+  url: string;
+  opts: string;
+  status: ImportRequestInfo["status"];
+  provider: string | null;
+  source: string | null;
+  name: string | null;
+  truncated: number;
+  error: string | null;
+  createdAt: number;
+};
+type TrackRow = {
+  id: string;
+  requestId: string;
+  pos: number;
+  meta: string;
+  status: ImportTrackStatus;
+  error: string | null;
+  delivered: number;
+  songId: string | null;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  duration: number | null;
+  size: number | null;
+  coverSize: number | null;
+};
+
+/** Os links que a pessoa pediu, com cada música (e a do catálogo, quando terminou). */
+app.get("/imports", async (c) => {
+  const db = c.env.DB;
+  const { results: reqs } = await db
+    .prepare(
+      `SELECT id, url, opts, status, provider, source, name, truncated, error, created_at AS createdAt
+       FROM import_requests WHERE user_id = ? ORDER BY created_at`,
+    )
+    .bind(c.get("userId"))
+    .all<RequestRow>();
+  let tracks: TrackRow[] = [];
+  if (reqs.length) {
+    const { results } = await db
+      .prepare(
+        `SELECT t.id, t.request_id AS requestId, t.pos, t.meta, t.status, t.error, t.delivered, t.song_id AS songId,
+                s.artist, s.title, s.album, s.duration, s.size, s.cover_size AS coverSize
+         FROM import_tracks t LEFT JOIN songs s ON s.id = t.song_id
+         WHERE t.request_id IN (${reqs.map(() => "?").join(",")}) ORDER BY t.request_id, t.pos`,
+      )
+      .bind(...reqs.map((r) => r.id))
+      .all<TrackRow>();
+    tracks = results;
+  }
+  const requests: ImportRequestInfo[] = reqs.map((r) => ({
+    id: r.id,
+    url: r.url,
+    opts: JSON.parse(r.opts) as ImportOpts,
+    status: r.status,
+    ...(r.provider && { provider: r.provider }),
+    ...(r.source && { source: r.source }),
+    ...(r.name && { name: r.name }),
+    truncated: !!r.truncated,
+    ...(r.error && { error: r.error }),
+    createdAt: r.createdAt,
+    tracks: tracks
+      .filter((t) => t.requestId === r.id)
+      .map((t) => ({
+        id: t.id,
+        pos: t.pos,
+        meta: JSON.parse(t.meta) as ResolvedTrack,
+        status: t.status,
+        ...(t.error && { error: t.error }),
+        ...(t.songId &&
+          t.title !== null && {
+            song: {
+              id: t.songId,
+              artist: t.artist ?? "",
+              title: t.title,
+              album: t.album ?? "",
+              duration: t.duration ?? 0,
+              size: t.size ?? 0,
+              coverSize: t.coverSize ?? 0,
+            },
+          }),
+        delivered: !!t.delivered,
+      })),
+  }));
+  const now = Date.now();
+  const helpers = await db
+    .prepare("SELECT COUNT(*) AS n FROM import_devices WHERE last_seen > ? AND blocked_until <= ?")
+    .bind(now - SPOT_ACTIVE, now)
+    .first<{ n: number }>();
+  return c.json({ requests, helpers: helpers?.n ?? 0 });
+});
+
+/** Pedido da própria pessoa. */
+async function ownRequest(c: Ctx) {
+  const id = checkId(c.req.param("id") ?? "");
+  const row = await c.env.DB.prepare("SELECT id FROM import_requests WHERE id = ? AND user_id = ?").bind(id, c.get("userId")).first();
+  if (!row) fail(404, "Pedido não encontrado");
+  return id;
+}
+
+const trackIdList = (v: unknown) =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && ID_RE.test(x)).slice(0, MAX_LINK_TRACKS) : [];
+
+/** As músicas já entraram na biblioteca de quem pediu. */
+app.post("/imports/:id/delivered", async (c) => {
+  const id = await ownRequest(c);
+  const ids = trackIdList((await c.req.json<{ tracks: string[] }>()).tracks);
+  if (ids.length)
+    await c.env.DB.prepare(`UPDATE import_tracks SET delivered = 1 WHERE request_id = ? AND id IN (${ids.map(() => "?").join(",")})`)
+      .bind(id, ...ids)
+      .run();
+  return c.json({ ok: true });
+});
+
+/** Ignora músicas que ainda não foram baixadas. */
+app.post("/imports/:id/skip", async (c) => {
+  const id = await ownRequest(c);
+  const ids = trackIdList((await c.req.json<{ tracks: string[] }>()).tracks);
+  if (ids.length)
+    await c.env.DB.prepare(
+      `UPDATE import_tracks SET status = 'skipped' WHERE request_id = ? AND status = 'queued' AND id IN (${ids.map(() => "?").join(",")})`,
+    )
+      .bind(id, ...ids)
+      .run();
+  return c.json({ ok: true });
+});
+
+/** Tenta de novo as que falharam ou foram ignoradas (ou o link inteiro, se nem a leitura deu). */
+app.post("/imports/:id/retry", async (c) => {
+  const id = await ownRequest(c);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE import_tracks SET status = 'queued', error = NULL, attempts = 0 WHERE request_id = ? AND status IN ('failed', 'skipped')",
+    ).bind(id),
+    c.env.DB.prepare("UPDATE import_requests SET status = 'queued', error = NULL, attempts = 0 WHERE id = ? AND status = 'failed'").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** Cancela o pedido (o que ainda não foi baixado não será) ou o tira da lista depois de pronto. */
+app.delete("/imports/:id", async (c) => {
+  const id = await ownRequest(c);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM import_tracks WHERE request_id = ?").bind(id),
+    c.env.DB.prepare("DELETE FROM import_requests WHERE id = ?").bind(id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/**
+ * Um celular pede trabalho (e avisa que está disponível). Responde com um link
+ * para ler, uma música para baixar, ou nada (e quantos segundos esperar).
+ */
+app.post("/spot/claim", async (c) => {
+  const device = checkDevice((await c.req.json<{ device: string }>()).device);
+  const db = c.env.DB;
+  const now = Date.now();
+  const results = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO import_devices (id, user_id, last_seen) VALUES (?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, user_id = excluded.user_id`,
+      )
+      .bind(device, c.get("userId"), now),
+    // Este celular está livre: o que ele tinha em mãos (o app fechou no meio) volta para a fila.
+    db.prepare("UPDATE import_tracks SET status = 'queued', device = NULL, attempts = attempts + 1 WHERE status = 'working' AND device = ?").bind(device),
+    // Downloads largados no meio por outros celulares voltam para a fila; depois de algumas tentativas, falham.
+    db
+      .prepare(
+        `UPDATE import_tracks SET device = NULL, attempts = attempts + 1,
+           status = CASE WHEN attempts + 1 >= ?1 THEN 'failed' ELSE 'queued' END,
+           error = CASE WHEN attempts + 1 >= ?1 THEN 'Nenhum celular conseguiu terminar o download' ELSE error END
+         WHERE status = 'working' AND claimed_at < ?2`,
+      )
+      .bind(SPOT_ATTEMPTS, now - SPOT_STALE),
+    db
+      .prepare(
+        `UPDATE import_requests SET device = NULL, attempts = attempts + 1,
+           status = CASE WHEN attempts + 1 >= ?1 THEN 'failed' ELSE 'queued' END,
+           error = CASE WHEN attempts + 1 >= ?1 THEN 'Nenhum celular conseguiu ler o link' ELSE error END
+         WHERE status = 'listing' AND (claimed_at < ?2 OR device = ?3)`,
+      )
+      .bind(SPOT_ATTEMPTS, now - SPOT_STALE, device),
+    db.prepare("SELECT blocked_until AS blockedUntil FROM import_devices WHERE id = ?").bind(device),
+  ]);
+  const blockedUntil = (results[4].results[0] as { blockedUntil: number } | undefined)?.blockedUntil ?? 0;
+  if (blockedUntil > now) return c.json({ job: null, wait: Math.ceil((blockedUntil - now) / 1000), resting: true });
+
+  // Ler um link é rápido e não baixa áudio: qualquer celular pega.
+  const list = await db
+    .prepare(
+      `UPDATE import_requests SET status = 'listing', device = ?, claimed_at = ?
+       WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' ORDER BY created_at LIMIT 1) AND status = 'queued'
+       RETURNING id, url`,
+    )
+    .bind(device, now)
+    .first<{ id: string; url: string }>();
+  if (list) return c.json({ job: { type: "list", id: list.id, url: list.url } satisfies SpotJob });
+
+  if (!(await db.prepare("SELECT 1 FROM import_tracks WHERE status = 'queued' LIMIT 1").first())) return c.json({ job: null, wait: 60 });
+
+  // Revezamento: a vez é do celular livre que espera há mais tempo desde o último download.
+  const turn = await db
+    .prepare(
+      `SELECT d.id FROM import_devices d
+       WHERE d.last_seen > ? AND d.blocked_until <= ?
+         AND NOT EXISTS (SELECT 1 FROM import_tracks t WHERE t.status = 'working' AND t.device = d.id)
+       ORDER BY d.last_done_at, d.id LIMIT 1`,
+    )
+    .bind(now - SPOT_ACTIVE, now)
+    .first<{ id: string }>();
+  if (turn && turn.id !== device) return c.json({ job: null, wait: 15 });
+
+  // Uma música de cada link por vez (a 1ª de cada, depois a 2ª...): um link grande não segura os outros.
+  const track = await db
+    .prepare(
+      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+       WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
+                   WHERE t.status = 'queued' ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
+       RETURNING id, request_id AS requestId, meta`,
+    )
+    .bind(device, now)
+    .first<{ id: string; requestId: string; meta: string }>();
+  if (!track) return c.json({ job: null, wait: 15 });
+  return c.json({ job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta) } satisfies SpotJob });
+});
+
+/** O celular parou de ajudar (pausou a música, saiu do app ou do Wi-Fi): a vez passa na hora. */
+app.post("/spot/leave", async (c) => {
+  const device = checkDevice((await c.req.json<{ device: string }>()).device);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE import_devices SET last_seen = 0 WHERE id = ? AND user_id = ?").bind(device, c.get("userId")),
+    c.env.DB.prepare("UPDATE import_tracks SET status = 'queued', device = NULL WHERE status = 'working' AND device = ?").bind(device),
+    c.env.DB.prepare("UPDATE import_requests SET status = 'queued', device = NULL WHERE status = 'listing' AND device = ?").bind(device),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** O que fazer com uma falha: descansar o celular, tentar de novo ou desistir. */
+function failure(env: Env, table: "import_tracks" | "import_requests", id: string, device: string, kind: SpotFailKind, error: string) {
+  const db = env.DB;
+  const now = Date.now();
+  const out = [db.prepare("UPDATE import_devices SET last_done_at = ? WHERE id = ?").bind(now, device)];
+  if (kind === "limit") out.push(db.prepare("UPDATE import_devices SET blocked_until = ? WHERE id = ?").bind(now + SPOT_REST, device));
+  out.push(
+    kind === "gone"
+      ? db.prepare(`UPDATE ${table} SET status = 'failed', error = ?, device = NULL WHERE id = ?`).bind(error, id)
+      : db
+          .prepare(
+            `UPDATE ${table} SET device = NULL, attempts = attempts + 1,
+               status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'queued' END, error = ? WHERE id = ?`,
+          )
+          // Barrado pelo YouTube não é culpa da música: outro celular ainda tenta.
+          .bind(kind === "limit" ? SPOT_ATTEMPTS + 2 : SPOT_ATTEMPTS, error, id),
+  );
+  return db.batch(out);
+}
+
+const failKind = (k: unknown): SpotFailKind => (k === "limit" || k === "gone" ? k : "temp");
+
+/** O celular leu o link: cada música vira uma linha da fila (as que já estão no catálogo já saem prontas). */
+app.post("/spot/list/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const body = await c.req.json<{
+    device: string;
+    error?: string;
+    kind?: SpotFailKind;
+    provider?: string;
+    source?: string;
+    name?: string;
+    truncated?: boolean;
+    tracks?: { meta: ResolvedTrack; songId?: string }[];
+  }>();
+  const device = checkDevice(body.device);
+  const db = c.env.DB;
+  const req = await db.prepare("SELECT 1 FROM import_requests WHERE id = ? AND status = 'listing' AND device = ?").bind(id, device).first();
+  if (!req) fail(409, "Esse link não está mais com este aparelho");
+  if (body.error) {
+    await failure(c.env, "import_requests", id, device, failKind(body.kind), text(body.error));
+    return c.json({ ok: true });
+  }
+  const tracks = (body.tracks ?? []).slice(0, MAX_LINK_TRACKS);
+  if (!tracks.length) {
+    await failure(c.env, "import_requests", id, device, "gone", "Não achei músicas nesse link");
+    return c.json({ ok: true });
+  }
+  const source =
+    typeof body.source === "string" && /^(youtube|spotify|deezer)-playlist:[\w-]{1,80}$/.test(body.source) ? body.source : null;
+  const inserts = tracks.map((t, pos) => {
+    const songId = typeof t.songId === "string" && ID_RE.test(t.songId) ? t.songId : null;
+    return db
+      .prepare("INSERT INTO import_tracks (id, request_id, pos, meta, status, song_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(randomId(), id, pos, JSON.stringify(cleanTrack(t.meta ?? {})), songId ? "done" : "queued", songId);
+  });
+  await db.batch([
+    db.prepare("DELETE FROM import_tracks WHERE request_id = ?").bind(id),
+    ...inserts,
+    db
+      .prepare(
+        "UPDATE import_requests SET status = 'listed', provider = ?, source = ?, name = ?, truncated = ?, error = NULL, device = NULL WHERE id = ?",
+      )
+      .bind(text(body.provider, 20) || null, source, text(body.name) || null, body.truncated ? 1 : 0, id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** O celular terminou (ou não conseguiu) uma música. */
+app.post("/spot/track/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const body = await c.req.json<{ device: string; songId?: string; error?: string; kind?: SpotFailKind }>();
+  const device = checkDevice(body.device);
+  const db = c.env.DB;
+  const row = await db.prepare("SELECT 1 FROM import_tracks WHERE id = ? AND status = 'working' AND device = ?").bind(id, device).first();
+  if (!row) fail(409, "Essa música não está mais com este aparelho");
+  if (body.error || !body.songId) {
+    await failure(c.env, "import_tracks", id, device, failKind(body.kind), text(body.error) || "Não consegui baixar");
+    return c.json({ ok: true });
+  }
+  const songId = checkId(body.songId);
+  if (!(await db.prepare("SELECT 1 FROM songs WHERE id = ? AND status = 'ready'").bind(songId).first())) fail(400, "A música não está no catálogo");
+  await db.batch([
+    db.prepare("UPDATE import_tracks SET status = 'done', song_id = ?, error = NULL, device = NULL WHERE id = ?").bind(songId, id),
+    db.prepare("UPDATE import_devices SET last_done_at = ? WHERE id = ?").bind(Date.now(), device),
+  ]);
+  return c.json({ ok: true });
+});
+
+/**
+ * Quem canta essa música? (quando o arquivo não traz e o nome não diz). Procura
+ * no Deezer e no iTunes, e só aceita um resultado com o mesmo título: um artista
+ * errado é pior que "Artista desconhecido".
+ */
+app.get("/lookup/artist", async (c) => {
+  const title = text(c.req.query("title"), 200);
+  if (!title) return c.json({ artist: "" });
+  const norm = (s: string) =>
+    plain(s.replace(/[([{][^)\]}]*[)\]}]/g, " ").replace(/\b(official|video|audio|lyrics?|letra|clipe|hd|4k|remaster(ed)?|feat\.?|ft\.?)\b/gi, " "));
+  const same = (a: string) => {
+    const x = norm(a);
+    const y = norm(title);
+    return !!x && !!y && (x === y || x.startsWith(`${y} `) || y.startsWith(`${x} `));
+  };
+  const get = async (url: string): Promise<Record<string, unknown>> => {
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    return r.ok ? r.json() : {};
+  };
+  try {
+    const dz = await get(`https://api.deezer.com/search?limit=10&q=${encodeURIComponent(title)}`);
+    const hit = ((dz.data ?? []) as { title?: string; title_short?: string; artist?: { name?: string } }[]).find(
+      (t) => same(t.title_short ?? t.title ?? "") && t.artist?.name,
+    );
+    if (hit?.artist?.name) return c.json({ artist: hit.artist.name });
+  } catch {
+    /* tenta o iTunes */
+  }
+  try {
+    const it = await get(`https://itunes.apple.com/search?media=music&entity=song&limit=10&term=${encodeURIComponent(title)}`);
+    const hit = ((it.results ?? []) as { trackName?: string; artistName?: string }[]).find((t) => same(t.trackName ?? "") && t.artistName);
+    if (hit?.artistName) return c.json({ artist: hit.artistName });
+  } catch {
+    /* sem resposta: fica "Artista desconhecido" */
+  }
+  return c.json({ artist: "" });
 });
 
 // ---------------- Compartilhamento ----------------

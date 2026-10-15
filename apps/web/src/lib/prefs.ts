@@ -13,10 +13,8 @@ export interface Prefs {
   crossfade: number;
   /** Avisar quando uma importação/envio terminar com o app em segundo plano. */
   notify: boolean;
-  /** Endereço do resolver neste aparelho ("" = o padrão do build). */
-  resolverUrl: string;
-  /** Senha do resolver (RESOLVER_TOKEN), se ele tiver uma. */
-  resolverToken: string;
+  /** App Android: ajudar a baixar as músicas pedidas por link (só no Wi-Fi). */
+  helpDownloads: boolean;
   /** Limite do cache de músicas ouvidas, em MB (tocar de novo não usa a internet nem o servidor). */
   cacheMB: number;
 }
@@ -26,8 +24,7 @@ const DEFAULTS: Prefs = {
   textSize: "normal",
   crossfade: 0,
   notify: true,
-  resolverUrl: "",
-  resolverToken: "",
+  helpDownloads: true,
   cacheMB: 1024,
 };
 const KEY = "prefs";

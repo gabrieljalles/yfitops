@@ -20,7 +20,8 @@ import { useStore } from "../lib/observable";
 import { askNotifyPermission, notifyPermission } from "../lib/notify";
 import { canCrossfade, stop } from "../lib/player";
 import { prefsStore, setPref } from "../lib/prefs";
-import { checkResolver, DEFAULT_RESOLVER, type ResolverStatus } from "../lib/resolverConn";
+import { isAndroidBrowser } from "../lib/native";
+import { spotStore } from "../lib/spot";
 import { StorageBar } from "../components/StorageBar";
 import { logout, sessionStore } from "../lib/session";
 import { formatBytes } from "../lib/tracks";
@@ -148,7 +149,7 @@ export function SettingsPage() {
         </label>
       </section>
 
-      <ResolverSettings />
+      <HelpSettings />
 
       {qualityChoice && (
         <section>
@@ -338,67 +339,46 @@ function Segmented<T extends string>({
   );
 }
 
-const RESOLVER_STATUS: Record<ResolverStatus, string> = {
-  ok: "Conectado.",
-  auth: "O servidor respondeu, mas a senha está errada ou faltando.",
-  offline: "Não respondeu. Ele está ligado nesse endereço?",
-};
-
-/** Endereço e senha do servidor de importação (resolver), deste aparelho. */
-function ResolverSettings() {
+/**
+ * Ajudar a baixar as músicas pedidas por link. Só o app Android consegue (o
+ * navegador não deixa um site baixar do YouTube), e só no Wi-Fi.
+ */
+function HelpSettings() {
   const prefs = useStore(prefsStore);
-  const [url, setUrl] = useState(prefs.resolverUrl);
-  const [token, setToken] = useState(prefs.resolverToken);
-  const [status, setStatus] = useState<ResolverStatus | "testing" | null>(null);
-
-  async function save() {
-    setPref("resolverUrl", url.trim());
-    setPref("resolverToken", token.trim());
-    setStatus("testing");
-    setStatus(await checkResolver());
-  }
-
+  const spot = useStore(spotStore);
   return (
     <section>
-      <h2>Importar por link</h2>
-      <p className="muted small">
-        O servidor que lê links do YouTube, Spotify e Deezer roda no seu computador. Vale só neste aparelho.
-      </p>
-      <form
-        className="form resolver-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
-      >
-        <label>
-          <span>Endereço</span>
-          <input
-            type="url"
-            value={url}
-            placeholder={DEFAULT_RESOLVER}
-            onChange={(e) => setUrl(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </label>
-        <label>
-          <span>Senha (RESOLVER_TOKEN)</span>
-          <input
-            type="password"
-            value={token}
-            placeholder="sem senha"
-            onChange={(e) => setToken(e.target.value)}
-            autoComplete="off"
-          />
-        </label>
-        <button type="submit" className="primary" disabled={status === "testing"}>
-          {status === "testing" ? "testando…" : "salvar e testar"}
-        </button>
-      </form>
-      {status && status !== "testing" && (
-        <p className={`small ${status === "ok" ? "muted" : "error"}`} role="status">
-          {RESOLVER_STATUS[status]}
+      <h2>Baixar músicas pedidas por link</h2>
+      {spot.capable ? (
+        <>
+          <label className="setting-row">
+            <span>
+              Este celular ajuda a baixar
+              <small className="muted">
+                Só no Wi-Fi, com o app aberto ou tocando música. Baixa para quem pediu (pode ser outra pessoa); as músicas não entram na sua biblioteca.
+              </small>
+            </span>
+            <input type="checkbox" className="switch" checked={prefs.helpDownloads} onChange={(e) => setPref("helpDownloads", e.target.checked)} />
+          </label>
+          {prefs.helpDownloads && (
+            <p className="muted small" role="status">
+              {spot.resting
+                ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."
+                : spot.active
+                  ? `${spot.doing ? `Agora: ${spot.doing}.` : "Pronto para ajudar: esperando pedidos."}${spot.done ? ` Já baixou ${spot.done} música(s) desde que o app abriu.` : ""}`
+                  : `Parado: ${spot.reason}.`}
+            </p>
+          )}
+        </>
+      ) : isAndroidBrowser() ? (
+        <p className="muted small">
+          Quem baixa as músicas pedidas por link são celulares Android com o app do yfitops. Instale o app para o seu celular ajudar
+          (só no Wi-Fi): <a href="/yfitops.apk" download>baixar o app Android</a>. Depois de instalar, abra pelo ícone novo.
+        </p>
+      ) : (
+        <p className="muted small">
+          Quem baixa as músicas pedidas por link são celulares Android com o app do yfitops, abertos e no Wi-Fi. Este aparelho só pede:
+          os pedidos ficam na fila até um desses celulares pegar.
         </p>
       )}
     </section>

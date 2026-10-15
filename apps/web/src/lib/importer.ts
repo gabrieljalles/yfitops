@@ -45,6 +45,37 @@ export interface ImportExtras {
   tags?: string[];
   /** Origem no catálogo (ex.: "spotify:<id>"), para não procurar no YouTube de novo. */
   alsoFrom?: string[];
+  /**
+   * Só envia ao catálogo, sem pôr na biblioteca deste aparelho (celular baixando
+   * para a fila de outra pessoa). O `result` do job vira o id da música no catálogo.
+   */
+  publishOnly?: boolean;
+}
+
+type Report = (patch: Partial<Job>) => void;
+
+/** Um arquivo por vez no FFmpeg (envios da pessoa e downloads da fila dividem o mesmo). */
+let lock: Promise<unknown> = Promise.resolve();
+function exclusive<T>(work: () => Promise<T>): Promise<T> {
+  const run = lock.then(work, work);
+  lock = run.catch(() => {});
+  return run;
+}
+
+/**
+ * Para a fila de importação: converte e envia ao catálogo SEM pôr na biblioteca
+ * deste aparelho. Devolve o id da música no catálogo.
+ */
+export async function publishForQueue(file: File, extras: ImportExtras, onStatus?: (status: string) => void): Promise<string> {
+  let result = "";
+  await exclusive(() =>
+    importFile(file, { ...extras, publishOnly: true }, (patch) => {
+      if (patch.result) result = patch.result;
+      if (patch.status) onStatus?.(patch.status);
+    }),
+  );
+  if (!result) throw new Error("A música não chegou ao catálogo");
+  return result;
 }
 
 const queue: {
@@ -118,7 +149,7 @@ async function drain() {
       const { job, file, extras, done } = queue.shift()!;
       if (!extras.source) sent.push(job.id);
       try {
-        await importFile(job.id, file, extras);
+        await exclusive(() => importFile(file, extras, (patch) => update(job.id, patch)));
       } catch (e) {
         console.error(`Falha ao importar ${file.name}`, e);
         update(job.id, {
@@ -235,20 +266,21 @@ function probeDuration(data: Uint8Array, mime: string): Promise<number> {
 const KEEP_MP3_UP_TO = 200_000;
 
 /** "já existe": a faixa já estava na biblioteca, com as tags e origens novas aplicadas. */
-async function linkExisting(jobId: number, song: Parameters<typeof addSong>[0], extras: ImportExtras, sourceInfo?: string) {
+async function linkExisting(report: Report, song: Parameters<typeof addSong>[0], extras: ImportExtras, sourceInfo?: string) {
+  if (extras.publishOnly) return report({ status: "pronto", detail: "já estava no yfitops", result: song.id, progress: 1 });
   const { id, existed } = await addSong(song, {
     tags: extras.tags,
     source: extras.source,
     alsoFrom: extras.alsoFrom,
     sourceInfo,
   });
-  update(jobId, existed
+  report(existed
     ? { status: "já existe", detail: "Essa música já está na biblioteca", result: id, progress: 1 }
     : { status: "pronto", detail: "já estava no yfitops: nada foi enviado", result: id, progress: 1 });
 }
 
-async function importFile(jobId: number, file: File, extras: ImportExtras) {
-  update(jobId, { status: "lendo" });
+async function importFile(file: File, extras: ImportExtras, report: Report) {
+  report({ status: "lendo" });
   const bytes = new Uint8Array(await file.arrayBuffer());
   const mime = mimeOf(file.name, file.type);
   const [meta, hash] = await Promise.all([readMeta(bytes, mime), fileHash(bytes)]);
@@ -260,7 +292,7 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
   const title = c.title || extras.title || fromName?.title || titleFromName(file.name);
   let artist = c.artist || c.albumartist || extras.artist || fromName?.artist || "";
   if (!artist) {
-    update(jobId, { detail: "procurando o artista..." });
+    report({ detail: "procurando o artista..." });
     artist = (await lookupArtist(title)) || UNKNOWN_ARTIST;
   }
   const duration = f.duration || (await probeDuration(bytes, mime));
@@ -270,10 +302,10 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
   // Alguém (talvez você) já enviou essa música: só liga na biblioteca.
   const query = { artist, title, duration, hash, sources };
   const known = await findInCatalog(query);
-  if (known) return linkExisting(jobId, known, extras, sourceInfo);
+  if (known) return linkExisting(report, known, extras, sourceInfo);
 
-  update(jobId, { status: "convertendo" });
-  const onStage = (stage: Stage, p: number) => update(jobId, { detail: stage, progress: p });
+  report({ status: "convertendo" });
+  const onStage = (stage: Stage, p: number) => report({ detail: stage, progress: p });
   const lightMp3 = /layer 3/i.test(f.codec ?? "") && !!f.bitrate && f.bitrate <= KEEP_MP3_UP_TO;
   const audio = await toMp3(bytes, extOf(file.name), onStage, lightMp3);
   const note = lightMp3
@@ -291,15 +323,16 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
     }
   }
 
-  update(jobId, { status: "enviando", detail: "", progress: 0 });
+  report({ status: "enviando", detail: "", progress: 0 });
   const { song, created } = await publishSong(
     audio,
     cover,
     { ...query, duration: duration || (await probeDuration(audio, "audio/mpeg")), album: c.album || extras.album || "" },
-    (p) => update(jobId, { progress: p }),
+    (p) => report({ progress: p }),
   );
   // Outra pessoa enviou a mesma enquanto este aparelho convertia.
-  if (!created) return linkExisting(jobId, song, extras, sourceInfo);
+  if (!created) return linkExisting(report, song, extras, sourceInfo);
+  if (extras.publishOnly) return report({ status: "pronto", progress: 1, detail: note, result: song.id });
   // Este aparelho já tem o MP3 e a capa: tocar não precisa baixar de volta.
   await rememberLocal(audioRef(song), audio).catch(() => {});
   const cref = coverRef(song);
@@ -313,7 +346,7 @@ async function importFile(jobId: number, file: File, extras: ImportExtras) {
     year: c.year,
     sourceInfo,
   });
-  update(jobId, { status: "pronto", progress: 1, detail: note, result: id });
+  report({ status: "pronto", progress: 1, detail: note, result: id });
 }
 
 /** Textura de capa de disco gasta (PNG branco com transparência), aplicada por cima de toda capa. */

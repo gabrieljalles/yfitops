@@ -4,3 +4,5 @@ dist/
 .dev.vars
 *.log
 e2e-shots/
+# APK gerado (npm run apk -w apps/android): vai junto no deploy, mas não no git.
+apps/web/public/yfitops.apk

@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { setImportLink } from "./lib/linkImport";
+import { setImportLink } from "./lib/imports";
 import { applyPrefs } from "./lib/prefs";
 import { restoreSession } from "./lib/session";
 import "./styles.css";
