@@ -3,7 +3,8 @@ import { Cover } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
 import { addSong, coverRef, searchCatalog, songTrackId } from "../lib/catalog";
-import { libraryStore, sharedTrackId } from "../lib/library";
+import { libraryStore } from "../lib/library";
+import { sessionStore } from "../lib/session";
 import { useStore } from "../lib/observable";
 import { playList } from "../lib/player";
 import { allTags, buildIndex } from "../lib/search";
@@ -13,15 +14,12 @@ import type { SongInfo, Track } from "@yfitops/core";
 
 export function SearchPage({ initialTag }: { initialTag?: string }) {
   const lib = useStore(libraryStore);
+  const canSeeCatalog = Boolean(useStore(sessionStore)?.catalog);
   const [q, setQ] = useState("");
   const [tags, setTags] = useState<string[]>(initialTag ? [initialTag] : []);
   const query = useDeferredValue(q);
 
-  const entries = useMemo(() => {
-    const all: [string, Track][] = Object.entries(lib.tracks);
-    for (const g of lib.shared) for (const [id, t] of Object.entries(g.tracks)) all.push([sharedTrackId(g.shareId, id), t]);
-    return all;
-  }, [lib.tracks, lib.shared]);
+  const entries = useMemo((): [string, Track][] => Object.entries(lib.tracks), [lib.tracks]);
   const index = useMemo(() => buildIndex(entries), [entries]);
   const tagList = useMemo(() => allTags(entries.map(([, t]) => t)), [entries]);
 
@@ -59,7 +57,8 @@ export function SearchPage({ initialTag }: { initialTag?: string }) {
       ) : (
         <p className="muted empty">Busque por qualquer coisa ou escolha tags acima.</p>
       )}
-      {!tags.length && <CatalogResults query={query} />}
+      {/* Músicas do servidor: só para quem o administrador liberou. */}
+      {!tags.length && canSeeCatalog && <CatalogResults query={query} />}
     </div>
   );
 }

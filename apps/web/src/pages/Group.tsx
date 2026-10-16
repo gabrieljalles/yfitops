@@ -4,12 +4,12 @@ import { Cover } from "../components/Cover";
 import { DownloadMenu } from "../components/DownloadMenu";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
-import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, saveItem, sharePlaylist, sharedTrackId, unshare } from "../lib/library";
+import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, saveItem } from "../lib/library";
 import { confirmDialog, promptDialog } from "../lib/dialog";
 import { finished, importsStore, playlistSyncUrl, requestProgress, syncPlaylist } from "../lib/imports";
 import { useStore } from "../lib/observable";
 import { playList, toggleShuffle, playerStore } from "../lib/player";
-import { attempt, toast } from "../lib/ui";
+import { attempt } from "../lib/ui";
 import { navigate } from "../router";
 
 function GroupHeader({ name, sub, ids, children }: { name: string; sub: string; ids: string[]; children?: React.ReactNode }) {
@@ -51,25 +51,10 @@ export function GroupPage({ id }: { id: string }) {
   const syncUrl = playlistSyncUrl(p);
   /** Sincronização pedida e ainda na fila. */
   const syncing = syncUrl ? imports.requests.find((r) => r.url === syncUrl && !finished(r)) : undefined;
-  const sentTo = lib.sent.filter((s) => s.shareId.startsWith(`${id}.`));
 
   return (
     <div className="page">
       <GroupHeader name={p.name} sub={musicas(p.trackIds.length)} ids={p.trackIds}>
-        <button
-          className="chip ghost"
-          onClick={async () => {
-            const email = await promptDialog({
-              title: "Compartilhar playlist",
-              message: "E-mail de quem vai receber a playlist (a pessoa precisa ter conta).",
-              input: { type: "email", placeholder: "email@exemplo.com" },
-              confirm: "compartilhar",
-            });
-            if (email) void attempt(() => sharePlaylist(id, email), "Playlist compartilhada");
-          }}
-        >
-          <Icon name="share" size={14} /> compartilhar
-        </button>
         {syncUrl && (
           <button
             className="chip ghost"
@@ -126,65 +111,11 @@ export function GroupPage({ id }: { id: string }) {
         </div>
       )}
 
-      {sentTo.length > 0 && (
-        <div className="shared-with muted small">
-          Compartilhado com{" "}
-          {sentTo.map((s) => (
-            <span key={s.shareId} className="chip small">
-              {s.toEmail}
-              <button title="Parar de compartilhar" onClick={() => attempt(() => unshare(s.shareId), "Compartilhamento removido")}>
-                <Icon name="close" size={12} />
-              </button>
-            </span>
-          ))}
-          <button
-            className="link"
-            title="Envia a versão atual da playlist"
-            onClick={() => attempt(async () => {
-              for (const s of sentTo) await sharePlaylist(id, s.toEmail);
-            }, "Compartilhamento atualizado")}
-          >
-            atualizar
-          </button>
-        </div>
-      )}
-
       <TrackList
         ids={p.trackIds}
         empty="Playlist vazia. Adicione músicas pelo menu ⋯ de cada uma."
         onRemove={editing ? (tid) => void removeFromPlaylist(id, tid) : undefined}
       />
-    </div>
-  );
-}
-
-export function SharedGroupPage({ shareId }: { shareId: string }) {
-  const lib = useStore(libraryStore);
-  const g = lib.shared.find((s) => s.shareId === shareId);
-  if (!g) return <div className="page muted">Compartilhamento não encontrado.</div>;
-  const ids = g.playlist.trackIds.map((t) => sharedTrackId(shareId, t));
-  return (
-    <div className="page">
-      <GroupHeader name={g.playlist.name} sub={`${musicas(ids.length)} · de ${g.fromEmail}`} ids={ids}>
-        <button
-          className="chip ghost"
-          onClick={async () => {
-            const ok = await confirmDialog({
-              title: "Sair da playlist?",
-              message: `Você deixa de ver "${g.playlist.name}". Quem compartilhou pode te mandar de novo.`,
-              confirm: "sair",
-              danger: true,
-            });
-            if (ok) {
-              navigate("/");
-              void attempt(() => unshare(shareId)).then(() => toast("Você saiu da playlist"));
-            }
-          }}
-        >
-          sair
-        </button>
-      </GroupHeader>
-      <TrackList ids={ids} />
     </div>
   );
 }

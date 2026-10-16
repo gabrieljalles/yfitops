@@ -113,6 +113,8 @@ export interface SignupRequest {
   authKey: string;
   /** Código de 6 dígitos recebido por e-mail. */
   code: string;
+  /** Celular para contato (cobrança). */
+  phone: string;
   /** Chave mestra cifrada com a senha. */
   wrappedMasterKey: string;
   /** Chave mestra cifrada para a chave de escrow do servidor (recuperação por e-mail). */
@@ -122,7 +124,18 @@ export interface SignupRequest {
   wrappedPrivateKey: string;
 }
 
-export interface SessionResponse {
+/** Cobrança e permissões da conta (no login e em GET /auth/me). */
+export interface AccountBilling {
+  /** Acesso pago até este instante (ms). Não existe para administradores (nunca vencem). */
+  paidUntil?: number;
+  phone?: string | null;
+  /** Como pagar (texto configurado no servidor). */
+  paymentInfo?: string;
+  /** Pode buscar no catálogo inteiro (liberado pelo administrador). */
+  catalog?: true;
+}
+
+export interface SessionResponse extends AccountBilling {
   token: string;
   userId: string;
   email: string;
@@ -138,25 +151,10 @@ export interface SessionResponse {
 export type AccountStatus = "approved" | "pending";
 
 /** GET /auth/me */
-export interface AccountInfo {
+export interface AccountInfo extends AccountBilling {
   status: AccountStatus;
   admin?: true;
   /** Pedidos de acesso esperando (só para administradores). */
   pendingRequests?: number;
 }
 
-/** Conteúdo de um compartilhamento (cifrado para a chave pública do destinatário). */
-export interface SharePayload {
-  playlist: Playlist;
-  tracks: Record<string, Track>;
-}
-
-export interface ShareInfo {
-  id: string;
-  fromUser: string;
-  fromEmail: string;
-  toUser: string;
-  toEmail: string;
-  payload: string;
-  updatedAt: number;
-}

@@ -6,7 +6,10 @@ Player de música pessoal na nuvem: suas músicas criptografadas na Cloudflare (
 - **Versão leve** Opus 160 kbps (WebCodecs) para os dados móveis. O download offline deixa escolher **normal** (Opus) ou **máxima** (FLAC).
 - **Criptografia no aparelho.** O R2 e o D1 só guardam dados ilegíveis. IDs de arquivo são HMAC do conteúdo (um "magnet" privado, que deduplica sem revelar nada), e a chave de cada arquivo também é derivada do conteúdo dentro da sua conta: arquivos repetidos (a mesma capa num álbum, a mesma música em dois formatos) geram exatamente o mesmo cifrado.
 - **Capas:** qualquer imagem é recortada num quadrado pelo centro (cortando o lado maior), recebe por cima a textura de capa de disco gasta (`apps/web/public/textura_vinil_branca.png`) e vira um WebP de 300×300 com cerca de 8–30 KB. Sem capa, aparece um vinil desenhado, sem custo de armazenamento.
-- Tags, busca, tocadas recentemente, grupos, offline, várias contas e compartilhamento de grupos.
+- Tags, busca, tocadas recentemente, grupos, offline e várias contas.
+- **Acesso pago:** o cadastro pede o celular. Ao ser aprovada, a conta ganha `TRIAL_DAYS` dias; depois disso, só com meses liberados no **Painel** (que também bloqueia e abre o WhatsApp com a cobrança pronta). Vencido, o servidor recusa tudo (402) e o app mostra a tela de pagamento, inclusive para as músicas baixadas. O celular continua ajudando a baixar os pedidos dos outros.
+- **Catálogo escondido:** cada pessoa só vê o que ela mesma trouxe. Buscar no catálogo inteiro só para o administrador e para quem ele marcar **vê o catálogo** no Painel.
+- **Aviso de atualização:** quando sai versão nova (cada deploy), o app mostra "Tem atualização nova" e recarrega. Vale no navegador e no app Android.
 
 ## Estrutura
 
@@ -39,7 +42,7 @@ Sem `RESEND_API_KEY`, os e-mails (código de cadastro e link de "esqueci a senha
 ```bash
 npm test                                                     # unidade (criptografia, blocos, decisões)
 cd packages/core && API_URL=http://127.0.0.1:8787 npx vitest run   # API real (Worker com DEV_MODE=1)
-npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, compartilhamento
+npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, catálogo escondido
 ```
 
 ## Publicar na Cloudflare (plano gratuito)
@@ -74,7 +77,6 @@ No celular Android (Chrome) ou no Windows (Edge/Chrome), abra o endereço e use 
 - Músicas, capas, títulos, tags, grupos e histórico são criptografados no aparelho (AES-256-GCM).
 - A senha nunca sai do aparelho. O Argon2id deriva dela a chave de login e a chave que abre a chave mestra.
 - **Recuperação por e-mail:** uma cópia da chave mestra fica cifrada para a chave de escrow do Worker. Isso torna a recuperação simples, mas quem controla o Worker (o admin) tecnicamente consegue decifrar. Um vazamento só do R2/D1 não expõe nada.
-- Compartilhar um grupo envia um instantâneo cifrado para a chave pública da pessoa. Use **atualizar** no grupo para mandar a versão nova.
 
 ## Próximos passos
 

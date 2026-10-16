@@ -35,8 +35,8 @@ export function StorageBar({ onlyWhenFull = false }: { onlyWhenFull?: boolean })
         ) : tone === "warn" ? (
           <strong>Nuvem enchendo: </strong>
         ) : null}
-        Nuvem de todos: {formatBytes(usage.bytes)} de {formatBytes(usage.quota)} ({Math.round(pct)}%) · {formatBytes(free)}{" "}
-        livres · {usage.count} {usage.count === 1 ? "música" : "músicas"}
+        Nuvem: {formatBytes(usage.bytes)} de {formatBytes(usage.quota)} ({Math.round(pct)}%) · {formatBytes(free)} livres
+        {usage.count !== undefined && ` · ${usage.count} ${usage.count === 1 ? "música" : "músicas"}`}
       </p>
       {tone !== "ok" && (
         <p className="small muted">

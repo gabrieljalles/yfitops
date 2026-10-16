@@ -18,7 +18,7 @@ import { useStore } from "../lib/observable";
 import { navigate } from "../router";
 
 type Mode = "entrar" | "criar" | "esqueci";
-type FieldName = "email" | "password" | "password2" | "code";
+type FieldName = "email" | "phone" | "password" | "password2" | "code";
 
 interface Issue {
   field?: FieldName;
@@ -160,11 +160,30 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
+/** Celular com DDD (10 ou 11 dígitos), ou com +código do país. */
+function checkPhone(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) throw missing("phone", "Falta o celular");
+  const ok = phone.trim().startsWith("+") ? digits.length >= 8 && digits.length <= 15 : [10, 11, 12, 13].includes(digits.length);
+  if (!ok) throw wrong("phone", "Coloque o DDD e o número, ex.: (11) 98765-4321");
+}
+
+/** Formata enquanto digita: (11) 98765-4321. */
+export function maskPhone(v: string): string {
+  if (v.trim().startsWith("+")) return v.replace(/[^\d+ ()-]/g, "");
+  const d = v.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 2) return d.length ? `(${d}` : "";
+  const rest = d.slice(2);
+  const cut = d.length === 11 ? 5 : 4;
+  return `(${d.slice(0, 2)}) ${rest.slice(0, cut)}${rest.length > cut ? `-${rest.slice(cut)}` : ""}`;
+}
+
 /** Associa erros do servidor ao campo certo. */
 function fromServer(err: unknown, field: FieldName): never {
   if (err instanceof ApiError) {
     if (err.status === 403 || err.status === 409) throw wrong("email", err.message);
     if (err.status === 401) throw wrong("password", err.message);
+    if (err.status === 400 && /celular/i.test(err.message)) throw wrong("phone", err.message);
     if (err.status === 400 || err.status === 429) throw wrong(field, err.message);
   }
   throw err;
@@ -175,6 +194,7 @@ export function AuthPage() {
   /** Criar conta tem duas etapas: dados → código recebido por e-mail. */
   const [step, setStep] = useState<"dados" | "codigo">("dados");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [code, setCode] = useState("");
@@ -189,7 +209,7 @@ export function AuthPage() {
     if (mode === "criar" && step === "codigo") {
       if (!code.trim()) throw missing("code", "Digite o código que chegou no seu e-mail");
       if (code.replace(/\D/g, "").length !== 6) throw missing("code", "O código tem 6 números");
-      await signup(email, password, code).catch((e) => fromServer(e, "code"));
+      await signup(email, password, code, phone).catch((e) => fromServer(e, "code"));
       return;
     }
     if (!email.trim()) throw missing("email", "Falta o e-mail");
@@ -198,11 +218,12 @@ export function AuthPage() {
       if (!password) throw missing("password", "Falta a senha");
       await login(email, password).catch((e) => fromServer(e, "password"));
     } else if (mode === "criar") {
+      checkPhone(phone);
       checkPassword(password, password2);
       const res = await startSignup(email).catch((e) => fromServer(e, "email"));
       // Sem código: a conta já é criada e fica esperando a aprovação.
       if (!res.codeRequired) {
-        await signup(email, password, "").catch((e) => fromServer(e, "email"));
+        await signup(email, password, "", phone).catch((e) => fromServer(e, "email"));
         return;
       }
       setStep("codigo");
@@ -276,6 +297,19 @@ export function AuthPage() {
               issue={issue}
               onChange={(v) => (setEmail(v), clear("email"))}
             />
+            {mode === "criar" && (
+              <Field
+                name="phone"
+                label="Celular (WhatsApp)"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel-national"
+                placeholder="(11) 98765-4321"
+                value={phone}
+                issue={issue}
+                onChange={(v) => (setPhone(maskPhone(v)), clear("phone"))}
+              />
+            )}
             {mode !== "esqueci" && (
               <Field
                 name="password"

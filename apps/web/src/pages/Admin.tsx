@@ -3,6 +3,7 @@ import type { SongInfo } from "@yfitops/core";
 import { Cover } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/api";
+import { daysLeft, dueText, formatDate, formatPhone, WARN_DAYS } from "../lib/billing";
 import { coverRef } from "../lib/catalog";
 import { confirmDialog } from "../lib/dialog";
 import { refreshAccount } from "../lib/session";
@@ -23,11 +24,120 @@ interface AdminUser {
   lastLogin: number | null;
   admin: boolean;
   me: boolean;
+  phone: string | null;
+  /** Acesso pago até (ms). */
+  paidUntil: number;
+  /** Pode buscar no catálogo inteiro. */
+  catalog: boolean;
 }
 
 interface Overview {
   usage: { bytes: number; quota: number; count: number };
+  /** Texto de como pagar (vai na mensagem de cobrança). */
+  paymentInfo: string;
   users: AdminUser[];
+}
+
+const MONTH_OPTIONS = [1, 2, 3, 6, 12];
+
+/** Link do WhatsApp com a mensagem de cobrança pronta. */
+function whatsappLink(u: AdminUser, paymentInfo: string): string | null {
+  if (!u.phone) return null;
+  const when = formatDate(u.paidUntil);
+  const text =
+    u.paidUntil < Date.now()
+      ? `Oi! Seu acesso ao Yfitops venceu em ${when}. Para voltar a ouvir: ${paymentInfo}`
+      : `Oi! Seu acesso ao Yfitops vence em ${when}. Para renovar: ${paymentInfo}`;
+  return `https://wa.me/${u.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+}
+
+/** Cobrança de uma pessoa: até quando está pago, liberar meses, bloquear, cobrar e o acesso ao catálogo. */
+function Billing({ u, paymentInfo, onChange }: { u: AdminUser; paymentInfo: string; onChange: () => Promise<void> }) {
+  const [months, setMonths] = useState(1);
+  const [catalog, setCatalog] = useState(u.catalog);
+  const [busy, setBusy] = useState(false);
+  const now = Date.now();
+  const expired = u.paidUntil < now;
+  const tone = expired ? "error" : daysLeft(u.paidUntil, now) <= WARN_DAYS ? "warn" : "ok";
+  const wa = whatsappLink(u, paymentInfo);
+
+  const run = (fn: () => Promise<unknown>, ok: string) =>
+    attempt(async () => {
+      setBusy(true);
+      try {
+        await fn();
+        await onChange();
+      } finally {
+        setBusy(false);
+      }
+    }, ok);
+
+  return (
+    <div className="admin-billing">
+      <small className={`tone-text-${tone}`}>
+        {expired ? `vencido em ${formatDate(u.paidUntil)}` : `pago até ${formatDate(u.paidUntil)} (vence ${dueText(u.paidUntil, now)})`}
+      </small>
+      <span className="row wrap admin-actions">
+        <select value={months} disabled={busy} onChange={(e) => setMonths(Number(e.target.value))} aria-label="Meses a liberar">
+          {MONTH_OPTIONS.map((m) => (
+            <option key={m} value={m}>
+              {m} {m === 1 ? "mês" : "meses"}
+            </option>
+          ))}
+        </select>
+        <button
+          className="chip"
+          disabled={busy}
+          onClick={() =>
+            void run(
+              () => api.json(`/admin/users/${u.id}/access`, { method: "POST", json: { months } }),
+              `${months} ${months === 1 ? "mês liberado" : "meses liberados"} para ${u.email}`,
+            )
+          }
+        >
+          liberar
+        </button>
+        {wa && (
+          <a className="chip ghost" href={wa} target="_blank" rel="noreferrer">
+            cobrar no WhatsApp
+          </a>
+        )}
+        {!expired && (
+          <button
+            className="link danger"
+            disabled={busy}
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: "Bloquear agora?",
+                message: `${u.email} perde o acesso na hora. Volta quando você liberar meses de novo. Nada da biblioteca é apagado.`,
+                confirm: "bloquear",
+                danger: true,
+              });
+              if (ok) void run(() => api.json(`/admin/users/${u.id}/access`, { method: "POST", json: { block: true } }), "Acesso bloqueado");
+            }}
+          >
+            bloquear
+          </button>
+        )}
+        <label className="admin-toggle" title="Deixa essa pessoa buscar todas as músicas do servidor">
+          <input
+            type="checkbox"
+            checked={catalog}
+            disabled={busy}
+            onChange={(e) => {
+              const allowed = e.target.checked;
+              setCatalog(allowed);
+              void run(
+                () => api.json(`/admin/users/${u.id}/catalog`, { method: "POST", json: { allowed } }),
+                allowed ? `${u.email} agora vê o catálogo` : `${u.email} não vê mais o catálogo`,
+              );
+            }}
+          />
+          vê o catálogo
+        </label>
+      </span>
+    </div>
+  );
 }
 
 type AdminSong = SongInfo & { createdAt: number; uploadedBy: string | null };
@@ -95,7 +205,10 @@ export default function AdminPage() {
               <li key={u.id}>
                 <span className="admin-who">
                   <strong>{u.email}</strong>
-                  <small className="muted">pediu em {date(u.createdAt)}</small>
+                  <small className="muted">
+                    pediu em {date(u.createdAt)}
+                    {u.phone && ` · ${formatPhone(u.phone)}`}
+                  </small>
                 </span>
                 <span className="row">
                   <button className="primary" onClick={() => void approve(u)}>
@@ -150,8 +263,10 @@ export default function AdminPage() {
                   {u.me && <span className="muted"> (você)</span>}
                 </strong>
                 <small className="muted">
-                  desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · trouxe {musicas(u.songs)} ({formatBytes(u.bytes)})
+                  {u.phone ? `${formatPhone(u.phone)} · ` : ""}desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · trouxe{" "}
+                  {musicas(u.songs)} ({formatBytes(u.bytes)})
                 </small>
+                {!u.admin && <Billing u={u} paymentInfo={data.paymentInfo} onChange={load} />}
               </span>
               <span className="row">
                 <button className="link" onClick={() => void resetLink(u)}>

@@ -177,7 +177,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
                     : track.song
                     ? {
                         title: "Tirar da biblioteca?",
-                        message: `"${track.title}" sai da sua biblioteca, das suas playlists e dos downloads deste aparelho. Ela continua no yfitops: dá para achar na busca e adicionar de novo.`,
+                        message: `"${track.title}" sai da sua biblioteca, das suas playlists e dos downloads deste aparelho. Para ter de novo, é só trazer outra vez.`,
                         confirm: "tirar",
                         danger: true,
                       }

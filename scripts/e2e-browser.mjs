@@ -85,10 +85,12 @@ try {
   const email = `eu-${Date.now()}@teste.com`;
   await page.getByLabel("E-mail").fill(email);
   await page.getByLabel("Senha", { exact: true }).fill("minha-senha-123");
+  await page.getByLabel("Celular (WhatsApp)").fill("11987654321");
   await page.getByLabel("Repita a senha").fill("outra-senha-123");
   await page.locator("form").getByRole("button", { name: "Continuar" }).click();
   await page.getByText("As senhas não são iguais").waitFor();
   await shot("01b-aviso-vermelho");
+  await page.getByLabel("Celular (WhatsApp)").fill("11987654321");
   await page.getByLabel("Repita a senha").fill("minha-senha-123");
   await enterSignupCode(page, "01c-aviso-verde-codigo");
   await page.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
@@ -106,6 +108,7 @@ try {
   await helper.getByRole("button", { name: "Criar conta" }).click();
   await helper.getByLabel("E-mail").fill(`ajuda-${Date.now()}@teste.com`);
   await helper.getByLabel("Senha", { exact: true }).fill("senha-de-quem-ajuda");
+  await helper.getByLabel("Celular (WhatsApp)").fill("11987654321");
   await helper.getByLabel("Repita a senha").fill("senha-de-quem-ajuda");
   await enterSignupCode(helper);
   await helper.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
@@ -212,7 +215,7 @@ try {
   await p2.getByText(SONG).first().waitFor();
   console.log("   sync entre aparelhos ✓");
 
-  step("compartilhar grupo com outra pessoa");
+  step("outra pessoa: sem permissão, a busca não mostra o catálogo");
   const ctx3 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const p3 = await ctx3.newPage();
   p3.on("pageerror", (e) => logs.push(`[pageerror B] ${e.message}`));
@@ -220,35 +223,19 @@ try {
   await p3.goto(URL);
   await p3.getByRole("button", { name: "Criar conta" }).click();
   await p3.getByLabel("E-mail").fill(emailB);
+  await p3.getByLabel("Celular (WhatsApp)").fill("21912345678");
   await p3.getByLabel("Senha", { exact: true }).fill("senha-do-amigo");
   await p3.getByLabel("Repita a senha").fill("senha-do-amigo");
   await enterSignupCode(p3);
   await p3.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto(URL + "#/");
-  await page.locator(".grid-item", { hasText: "Estudo" }).click();
-  await page.getByRole("button", { name: /compartilhar/ }).click();
-  await answerDialog(page, emailB);
-  await page.getByText(emailB).waitFor({ timeout: 20000 });
-  await p3.reload();
-  await p3.getByText("Compartilhados com você").waitFor({ timeout: 30000 });
-  await p3.locator(".grid-item", { hasText: "Estudo" }).click();
-  await p3.locator(".track-main").first().click();
-  await p3.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
-  console.log("   amigo tocando a música compartilhada ✓");
-  await p3.screenshot({ path: join(OUT, "13-compartilhado.png") });
-
-  step("catálogo: o amigo acha a música na busca e adiciona sem enviar nada");
   await p3.goto(URL + "#/buscar");
+  const searched = p3.waitForResponse((r) => r.url().includes("/api/songs/search"), { timeout: 5000 }).catch(() => null);
   await p3.getByPlaceholder(/Música, artista/).fill(SONG.toLowerCase());
-  const fromCatalog = p3.locator(".catalog-results li", { hasText: SONG });
-  await fromCatalog.waitFor({ timeout: 15000 });
-  await p3.screenshot({ path: join(OUT, "14-busca-catalogo.png") });
-  await fromCatalog.getByRole("button", { name: "Adicionar à biblioteca" }).click();
-  await p3.getByText("Adicionada à biblioteca").waitFor();
-  await p3.goto(URL + "#/biblioteca");
-  await p3.getByText(SONG).first().waitFor();
-  console.log("   música do catálogo na biblioteca do amigo ✓");
+  if (await searched) throw new Error("a busca perguntou ao catálogo sem permissão");
+  await p3.waitForTimeout(1500);
+  if (await p3.locator(".catalog-results").count()) throw new Error("catálogo apareceu sem permissão");
+  console.log("   catálogo escondido para quem não tem permissão ✓");
+  await p3.screenshot({ path: join(OUT, "13-busca-sem-catalogo.png") });
 } catch (e) {
   console.log("FALHOU:", e.message.split("\n")[0]);
   process.exitCode = 1;

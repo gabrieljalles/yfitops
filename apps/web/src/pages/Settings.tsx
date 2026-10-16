@@ -14,8 +14,10 @@ import {
   type DownloadQuality,
   type Quality,
 } from "../lib/blobs";
-import { confirmDialog } from "../lib/dialog";
-import { libraryStore, sync, unshare } from "../lib/library";
+import { api } from "../lib/api";
+import { formatDate, formatPhone } from "../lib/billing";
+import { confirmDialog, promptDialog } from "../lib/dialog";
+import { libraryStore, sync } from "../lib/library";
 import { useStore } from "../lib/observable";
 import { askNotifyPermission, notifyPermission } from "../lib/notify";
 import { canCrossfade, stop } from "../lib/player";
@@ -23,7 +25,7 @@ import { prefsStore, setPref } from "../lib/prefs";
 import { isAndroidBrowser } from "../lib/native";
 import { spotStore } from "../lib/spot";
 import { StorageBar } from "../components/StorageBar";
-import { logout, sessionStore } from "../lib/session";
+import { logout, refreshAccount, sessionStore } from "../lib/session";
 import { formatBytes } from "../lib/tracks";
 import { attempt } from "../lib/ui";
 
@@ -51,6 +53,29 @@ export function SettingsPage() {
       <section>
         <h2>Conta</h2>
         <p>{session?.email}</p>
+        <p className="muted small">
+          {session?.phone ? formatPhone(session.phone) : "Sem celular cadastrado"}{" "}
+          <button
+            className="link"
+            onClick={async () => {
+              const phone = await promptDialog({
+                title: "Seu celular",
+                message: "Com DDD. É por ele que avisamos sobre o pagamento.",
+                input: { type: "tel", value: formatPhone(session?.phone), placeholder: "(11) 98765-4321" },
+                confirm: "salvar",
+              });
+              if (phone) {
+                void attempt(async () => {
+                  await api.json("/auth/phone", { method: "PUT", json: { phone } });
+                  await refreshAccount();
+                }, "Celular salvo");
+              }
+            }}
+          >
+            {session?.phone ? "trocar" : "adicionar"}
+          </button>
+        </p>
+        {session?.paidUntil !== undefined && <p className="muted small">Acesso liberado até {formatDate(session.paidUntil)}</p>}
         <StorageBar />
         <p className="muted small">
           {lib.syncing ? "sincronizando…" : lib.offline ? "Offline: as alterações ficam no aparelho até o servidor voltar" : lib.error ? `Erro no sync: ${lib.error}` : "Sincronizado"}{" "}
@@ -277,24 +302,6 @@ export function SettingsPage() {
           Limpar
         </button>
       </section>
-
-      {lib.sent.length > 0 && (
-        <section>
-          <h2>Você compartilhou</h2>
-          <ul className="plain">
-            {lib.sent.map((s) => (
-              <li key={s.shareId} className="row between">
-                <span>
-                  {s.playlistName} <span className="muted">→ {s.toEmail}</span>
-                </span>
-                <button className="link danger" onClick={() => attempt(() => unshare(s.shareId), "Compartilhamento removido")}>
-                  parar
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
 
       <section>
         <button

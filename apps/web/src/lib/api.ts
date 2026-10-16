@@ -1,5 +1,6 @@
 let token: string | null = null;
 let onUnauthorized: (() => void) | null = null;
+let onPaymentRequired: (() => void) | null = null;
 
 export function setToken(t: string | null) {
   token = t;
@@ -7,6 +8,11 @@ export function setToken(t: string | null) {
 
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
+}
+
+/** Pagamento vencido (402): o app mostra a tela de pagamento. */
+export function setPaymentRequiredHandler(fn: () => void) {
+  onPaymentRequired = fn;
 }
 
 export class ApiError extends Error {
@@ -37,6 +43,7 @@ async function raw(path: string, init: Init = {}): Promise<Response> {
       /* corpo não-JSON */
     }
     if (res.status === 401 && token && !path.startsWith("/auth/")) onUnauthorized?.();
+    if (res.status === 402) onPaymentRequired?.();
     throw new ApiError(res.status, message);
   }
   return res;

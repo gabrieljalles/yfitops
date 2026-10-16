@@ -267,7 +267,7 @@ const KEEP_MP3_UP_TO = 200_000;
 
 /** "já existe": a faixa já estava na biblioteca, com as tags e origens novas aplicadas. */
 async function linkExisting(report: Report, song: Parameters<typeof addSong>[0], extras: ImportExtras, sourceInfo?: string) {
-  if (extras.publishOnly) return report({ status: "pronto", detail: "já estava no yfitops", result: song.id, progress: 1 });
+  if (extras.publishOnly) return report({ status: "pronto", detail: sourceInfo ?? "pronto", result: song.id, progress: 1 });
   const { id, existed } = await addSong(song, {
     tags: extras.tags,
     source: extras.source,
@@ -276,7 +276,7 @@ async function linkExisting(report: Report, song: Parameters<typeof addSong>[0],
   });
   report(existed
     ? { status: "já existe", detail: "Essa música já está na biblioteca", result: id, progress: 1 }
-    : { status: "pronto", detail: "já estava no yfitops: nada foi enviado", result: id, progress: 1 });
+    : { status: "pronto", detail: sourceInfo ?? "pronto", result: id, progress: 1 });
 }
 
 async function importFile(file: File, extras: ImportExtras, report: Report) {

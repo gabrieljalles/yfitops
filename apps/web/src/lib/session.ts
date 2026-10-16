@@ -8,17 +8,22 @@ import {
   open,
   seal,
   toB64,
+  type AccountBilling,
   type AccountInfo,
   type AccountStatus,
   type SessionResponse,
   type UserKeys,
 } from "@yfitops/core";
 import { deriveFromPassword } from "@yfitops/core/password";
-import { api, setToken, setUnauthorizedHandler } from "./api";
+import { api, setPaymentRequiredHandler, setToken, setUnauthorizedHandler } from "./api";
 import { kvGet, kvSet, wipe } from "./db";
 import { createStore } from "./observable";
 
-export interface Session {
+/**
+ * Fica salva no aparelho junto com a cobrança (paidUntil), então o bloqueio por
+ * pagamento vencido vale até sem internet, para as músicas baixadas também.
+ */
+export interface Session extends AccountBilling {
   token: string;
   userId: string;
   email: string;
@@ -52,6 +57,20 @@ export function getSession(): Session {
 }
 
 setUnauthorizedHandler(() => void logout());
+// Pagamento vencido (402): pergunta a situação para mostrar a tela de pagamento.
+setPaymentRequiredHandler(() => void refreshAccount());
+
+/** Só os campos de cobrança (o servidor manda os que existem; os outros somem). */
+const billingOf = (b: AccountBilling): AccountBilling => ({
+  ...(b.paidUntil !== undefined && { paidUntil: b.paidUntil }),
+  ...(b.phone !== undefined && { phone: b.phone }),
+  ...(b.paymentInfo !== undefined && { paymentInfo: b.paymentInfo }),
+  ...(b.catalog && { catalog: true as const }),
+});
+
+/** Acesso vencido? Administrador e sessões antigas (sem data) nunca vencem. */
+export const isExpired = (s: Session | null | undefined, now = Date.now()) =>
+  Boolean(s && s.status !== "pending" && s.paidUntil !== undefined && s.paidUntil < now);
 
 /** Restaura a sessão salva neste aparelho (as CryptoKeys ficam no IndexedDB, não-extraíveis). */
 export async function restoreSession() {
@@ -77,6 +96,7 @@ async function finishLogin(res: SessionResponse, masterKey: Uint8Array) {
     publicKey: res.publicKey,
     status: res.status,
     ...(res.admin && { admin: true as const }),
+    ...billingOf(res),
   };
   const previous = await kvGet<Session>("session");
   if (previous && previous.userId !== s.userId) await wipe();
@@ -101,9 +121,9 @@ export async function refreshAccount() {
     return; // offline: fica como estava
   }
   pendingRequestsStore.set(info.pendingRequests ?? 0);
-  const { admin: _old, ...rest } = s;
-  const next: Session = { ...rest, status: info.status, ...(info.admin && { admin: true as const }) };
-  if (next.status !== s.status || next.admin !== s.admin) {
+  const { admin: _old, paidUntil: _p, phone: _ph, paymentInfo: _pi, catalog: _c, ...rest } = s;
+  const next: Session = { ...rest, status: info.status, ...(info.admin && { admin: true as const }), ...billingOf(info) };
+  if (JSON.stringify(next) !== JSON.stringify(s)) {
     await kvSet("session", next);
     sessionStore.set(next);
   }
@@ -134,7 +154,7 @@ export async function emailCodesEnabled(): Promise<boolean> {
 }
 
 /** Etapa 2: cria a conta com o código recebido. */
-export async function signup(email: string, password: string, code: string) {
+export async function signup(email: string, password: string, code: string, phone: string) {
   const { escrowPublicKey } = await api.json<{ escrowPublicKey: string }>("/auth/config");
   const { authKey, kek } = await deriveFromPassword(email, password);
   const mk = newMasterKey();
@@ -146,6 +166,7 @@ export async function signup(email: string, password: string, code: string) {
       email,
       authKey,
       code,
+      phone,
       wrappedMasterKey: toB64(await seal(kek, mk)),
       escrowMasterKey: await eciesSeal(escrowPublicKey, mk),
       publicKey: kp.publicKey,

@@ -3,6 +3,7 @@ import { coverUrl, offlineStore, pickVariant, readBlob, variantCandidates } from
 import { getTrack, recordPlay } from "./library";
 import { createStore } from "./observable";
 import { prefsStore } from "./prefs";
+import { isExpired, sessionStore } from "./session";
 
 export interface PlayerState {
   queue: string[];
@@ -150,6 +151,11 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
   const id = queue[index];
   const t = id ? getTrack(id) : undefined;
   if (!t) return;
+  // Pagamento vencido não toca nem as músicas baixadas.
+  if (isExpired(sessionStore.get())) {
+    stop();
+    return;
+  }
   const token = ++loadToken;
   let fadingFrom: HTMLAudioElement | null = null;
   if (crossfade > 0 && !audio.paused) {

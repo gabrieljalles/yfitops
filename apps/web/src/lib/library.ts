@@ -1,17 +1,11 @@
 import {
-  eciesOpen,
-  eciesSeal,
-  fromUtf8,
   openJSON,
   randomId,
   sealJSON,
-  utf8,
   type ItemKind,
   type ItemValue,
   type Play,
   type Playlist,
-  type ShareInfo,
-  type SharePayload,
   type SyncPullResponse,
   type Track,
 } from "@yfitops/core";
@@ -19,28 +13,12 @@ import { api, ApiError } from "./api";
 import { dropLocal, keepLocal } from "./blobs";
 import { db, kvGet, kvSet } from "./db";
 import { createStore } from "./observable";
-import { getKeys, getSession } from "./session";
-
-export interface SharedGroup {
-  shareId: string;
-  fromUser: string;
-  fromEmail: string;
-  playlist: Playlist;
-  tracks: Record<string, Track>;
-}
-
-export interface SentShare {
-  shareId: string;
-  toEmail: string;
-  playlistName: string;
-}
+import { getKeys } from "./session";
 
 export interface Library {
   tracks: Record<string, Track>;
   playlists: Record<string, Playlist>;
   plays: Record<string, Play>;
-  shared: SharedGroup[];
-  sent: SentShare[];
   loaded: boolean;
   syncing: boolean;
   error: string | null;
@@ -56,8 +34,6 @@ const empty: Library = {
   tracks: {},
   playlists: {},
   plays: {},
-  shared: [],
-  sent: [],
   loaded: false,
   syncing: false,
   error: null,
@@ -70,14 +46,8 @@ export const libraryStore = createStore<Library>(empty);
 const KIND_KEY = { track: "tracks", playlist: "playlists", play: "plays" } as const;
 const MAX_PLAYS = 300;
 
-// IDs de faixas compartilhadas: "s~<shareId>~<trackId>" (o til não aparece nos IDs normais).
-export const sharedTrackId = (shareId: string, trackId: string) => `s~${shareId}~${trackId}`;
-
 export function getTrack(id: string): Track | undefined {
-  const lib = libraryStore.get();
-  if (!id.startsWith("s~")) return lib.tracks[id];
-  const [, shareId, trackId] = id.split("~");
-  return lib.shared.find((g) => g.shareId === shareId)?.tracks[trackId];
+  return libraryStore.get().tracks[id];
 }
 
 // ---------------- Carregar do aparelho ----------------
@@ -87,8 +57,6 @@ export async function loadLocal() {
   const items = await d.getAll("items");
   const next: Library = { ...empty, tracks: {}, playlists: {}, plays: {} };
   for (const it of items) (next[KIND_KEY[it.kind]] as Record<string, unknown>)[it.id] = it.value;
-  next.shared = (await kvGet<SharedGroup[]>("shared")) ?? [];
-  next.sent = (await kvGet<SentShare[]>("sent")) ?? [];
   next.loaded = true;
   next.pending = await d.count("outbox");
   libraryStore.set(next);
@@ -242,9 +210,7 @@ export function forgottenIds(lib: Library, limit = 20): string[] {
 }
 
 export function getTrackFrom(lib: Library, id: string): Track | undefined {
-  if (!id.startsWith("s~")) return lib.tracks[id];
-  const [, shareId, trackId] = id.split("~");
-  return lib.shared.find((g) => g.shareId === shareId)?.tracks[trackId];
+  return lib.tracks[id];
 }
 
 // ---------------- Músicas só deste aparelho ----------------
@@ -345,10 +311,6 @@ const isOffline = (e: unknown) =>
   e instanceof TypeError ||
   (e instanceof ApiError && ([502, 503, 504].includes(e.status) || (e.status === 500 && e.message === "Erro 500")));
 
-/** Compartilhamentos mudam pouco: confere no máximo a cada 10 min (compartilhar/parar atualiza na hora). */
-const SHARES_EVERY = 10 * 60_000;
-let sharesAt = 0;
-
 async function doSync(pushOnly = false) {
   if (!navigator.onLine) {
     libraryStore.set((l) => ({ ...l, offline: true }));
@@ -357,10 +319,7 @@ async function doSync(pushOnly = false) {
   libraryStore.set((l) => ({ ...l, syncing: true }));
   try {
     await push();
-    if (!pushOnly) {
-      await pull();
-      if (Date.now() - sharesAt > SHARES_EVERY) await refreshShares();
-    }
+    if (!pushOnly) await pull();
     libraryStore.set((l) => ({ ...l, error: null, offline: false, ...(!pushOnly && { lastSync: Date.now() }) }));
   } catch (e) {
     // Sem servidor: nada se perde, as alterações ficam na fila e vão na próxima tentativa.
@@ -420,64 +379,3 @@ async function pull() {
     if (!res.more) break;
   }
 }
-
-// ---------------- Compartilhamento ----------------
-
-async function refreshShares() {
-  sharesAt = Date.now();
-  const me = getSession().userId;
-  const { shares } = await api.json<{ shares: ShareInfo[] }>("/shares");
-  const shared: SharedGroup[] = [];
-  const sent: SentShare[] = [];
-  for (const s of shares) {
-    if (s.toUser === me) {
-      try {
-        const payload = JSON.parse(fromUtf8.decode(await eciesOpen(getKeys().privateKey, s.payload))) as SharePayload;
-        for (const t of Object.values(payload.tracks)) {
-          // Arquivos criptografados são de quem compartilhou; os do catálogo são de todos.
-          for (const v of Object.values(t.variants)) if (v && !v.shared) v.owner = s.fromUser;
-          if (t.cover && !t.cover.shared) t.cover.owner = s.fromUser;
-        }
-        shared.push({ shareId: s.id, fromUser: s.fromUser, fromEmail: s.fromEmail, ...payload });
-      } catch {
-        /* compartilhamento ilegível: ignora */
-      }
-    } else {
-      sent.push({ shareId: s.id, toEmail: s.toEmail, playlistName: "" });
-    }
-  }
-  // O nome da playlist enviada vem do ID: "<playlistId>.<destinatário>".
-  const lib = libraryStore.get();
-  for (const s of sent) s.playlistName = lib.playlists[s.shareId.split(".")[0]]?.name ?? "(playlist removida)";
-  await kvSet("shared", shared);
-  await kvSet("sent", sent);
-  libraryStore.set((l) => ({ ...l, shared, sent }));
-}
-
-const blobIdsOf = (t: Track) => [...Object.values(t.variants).map((v) => v!.id), ...(t.cover ? [t.cover.id] : [])];
-
-/** Compartilha uma playlist (instantâneo). Repetir atualiza o conteúdo para a mesma pessoa. */
-export async function sharePlaylist(playlistId: string, email: string) {
-  const lib = libraryStore.get();
-  const playlist = lib.playlists[playlistId];
-  if (!playlist) throw new Error("Playlist não encontrada");
-  const target = await api.json<{ userId: string; publicKey: string }>(`/users/lookup?email=${encodeURIComponent(email)}`);
-  if (target.userId === getSession().userId) throw new Error("Esse é você 🙂");
-  const tracks: Record<string, Track> = {};
-  // As só deste aparelho (mais de 13 minutos) não têm como ir para outra pessoa.
-  for (const id of playlist.trackIds) if (lib.tracks[id] && !lib.tracks[id].local) tracks[id] = lib.tracks[id];
-  const payload: SharePayload = { playlist: { ...playlist, trackIds: Object.keys(tracks) }, tracks };
-  const sealed = await eciesSeal(target.publicKey, utf8.encode(JSON.stringify(payload)));
-  await api.json(`/shares/${playlistId}.${target.userId}`, {
-    method: "PUT",
-    json: { toUser: target.userId, payload: sealed, blobIds: Object.values(tracks).flatMap(blobIdsOf) },
-  });
-  await refreshShares();
-}
-
-export async function unshare(shareId: string) {
-  await api.json(`/shares/${shareId}`, { method: "DELETE" });
-  await refreshShares();
-}
-
-export { blobIdsOf };

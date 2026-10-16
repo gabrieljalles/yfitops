@@ -55,6 +55,7 @@ async function signup(email: string, password: string) {
       email,
       authKey,
       code: devCode,
+      phone: "(11) 98765-4321",
       wrappedMasterKey: toB64(await seal(kek, mk)),
       escrowMasterKey: await eciesSeal(escrowPublicKey, mk),
       publicKey: kp.publicKey,
@@ -73,13 +74,13 @@ describe.skipIf(!API)("API", () => {
     await expect(
       call("/auth/signup", {
         method: "POST",
-        json: { email: e, code: "000000", authKey: "x", wrappedMasterKey: "x", escrowMasterKey: "x", publicKey: "x", wrappedPrivateKey: "x" },
+        json: { email: e, code: "000000", phone: "11987654321", authKey: "x", wrappedMasterKey: "x", escrowMasterKey: "x", publicKey: "x", wrappedPrivateKey: "x" },
       }),
     ).rejects.toThrow(/400|Código/);
     await expect(call("/auth/signup/start", { method: "POST", json: { email: e } })).rejects.toThrow(/429/);
   });
 
-  it("fluxo completo: conta, sync, arquivo, compartilhamento, login", async () => {
+  it("fluxo completo: conta, sync, arquivo, login", async () => {
     const a = await signup(email, "senha-forte");
     const b = await signup(`b-${email}`, "outra-senha");
 
@@ -102,15 +103,9 @@ describe.skipIf(!API)("API", () => {
     expect(part.status).toBe(206);
     expect(new Uint8Array(await part.arrayBuffer())).toEqual(sealed.subarray(10, 20));
 
-    // B não acessa o arquivo de A sem compartilhamento
-    await expect(call(`/blobs/abc123?owner=${a.session.userId}`, { token: b.session.token })).rejects.toThrow(/403/);
-    const target = await call<{ userId: string; publicKey: string }>(`/users/lookup?email=b-${email}`, { token: a.session.token });
-    const payload = await eciesSeal(target.publicKey, new TextEncoder().encode("grupo"));
-    await call(`/shares/s-${Date.now()}`, { method: "PUT", token: a.session.token, json: { toUser: target.userId, payload, blobIds: ["abc123"] } });
-    const got = await call<Uint8Array>(`/blobs/abc123?owner=${a.session.userId}`, { token: b.session.token });
-    expect(got).toEqual(sealed);
-    const { shares } = await call<{ shares: { payload: string }[] }>("/shares", { token: b.session.token });
-    expect(new TextDecoder().decode(await eciesOpen(await importPrivateKey(b.kp.privateKey), shares[0].payload))).toBe("grupo");
+    // B não acessa o arquivo de A (não existe mais compartilhamento)
+    await expect(call(`/blobs/abc123?owner=${a.session.userId}`, { token: b.session.token })).rejects.toThrow(/404/);
+    await expect(call("/shares", { token: b.session.token })).rejects.toThrow(/404/);
 
     // Login abre a mesma chave mestra
     const { authKey, kek } = await deriveFromPassword(email, "senha-forte");

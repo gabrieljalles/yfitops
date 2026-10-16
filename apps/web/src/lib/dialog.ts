@@ -12,7 +12,7 @@ export interface DialogRequest {
   /** Ação destrutiva (excluir, apagar, sair): botão vermelho e foco no "cancelar". */
   danger?: boolean;
   /** Pede um texto (como o prompt()). */
-  input?: { placeholder?: string; value?: string; type?: "text" | "email" };
+  input?: { placeholder?: string; value?: string; type?: "text" | "email" | "tel" };
 }
 
 interface OpenDialog extends DialogRequest {

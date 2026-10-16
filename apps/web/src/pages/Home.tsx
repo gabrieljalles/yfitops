@@ -20,7 +20,7 @@ export function HomePage() {
   const groups = Object.entries(lib.playlists).sort((a, b) => b[1].createdAt - a[1].createdAt);
   const total = Object.keys(lib.tracks).length;
 
-  if (lib.loaded && total === 0 && !lib.shared.length) {
+  if (lib.loaded && total === 0) {
     return (
       <div className="page welcome">
         <h1>Sua estante está vazia</h1>
@@ -78,20 +78,6 @@ export function HomePage() {
         />
       </section>
 
-      {lib.shared.length > 0 && (
-        <section>
-          <h2>Compartilhados com você</h2>
-          <GroupGrid
-            items={lib.shared.map((g) => ({
-              key: g.shareId,
-              name: g.playlist.name,
-              sub: `de ${g.fromEmail}`,
-              trackIds: g.playlist.trackIds.map((t) => `s~${g.shareId}~${t}`),
-              href: `/compartilhado/${g.shareId}`,
-            }))}
-          />
-        </section>
-      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Vinyl } from "./components/Cover";
 import { Dialog } from "./components/Dialog";
 import { Icon, type IconName } from "./components/Icon";
@@ -6,18 +6,20 @@ import { Notice } from "./components/Notice";
 import { SyncButton } from "./components/SyncButton";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
+import { daysLeft, dueText, formatDate, WARN_DAYS } from "./lib/billing";
 import { keepLocalData, loadOfflineIndex } from "./lib/blobs";
 import { reconcileMerges } from "./lib/catalog";
 import { jobsStore } from "./lib/importer";
 import { libraryStore, loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
-import { playerStore } from "./lib/player";
-import { pendingRequestsStore, refreshAccount, sessionStore } from "./lib/session";
+import { playerStore, stop } from "./lib/player";
+import { isExpired, pendingRequestsStore, refreshAccount, sessionStore } from "./lib/session";
 import { uiStore } from "./lib/ui";
 import { AuthPage, PendingPage, ResetPage } from "./pages/Auth";
-import { FavoritesPage, GroupPage, SharedGroupPage } from "./pages/Group";
+import { FavoritesPage, GroupPage } from "./pages/Group";
 import { HomePage } from "./pages/Home";
 import { LibraryPage } from "./pages/Library";
+import { PaywallPage } from "./pages/Paywall";
 import { SearchPage } from "./pages/Search";
 import { SettingsPage } from "./pages/Settings";
 import { UploadPage } from "./pages/Upload";
@@ -36,11 +38,23 @@ const NAV: [string, string, IconName][] = [
   ["ajustes", "Ajustes", "settings"],
 ];
 
+/** Relógio que avança a cada minuto (o acesso pode vencer com o app aberto, até offline). */
+function useMinuteClock(): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
+
 export function App() {
   const session = useStore(sessionStore);
   const { parts, query } = useRoute();
+  const now = useMinuteClock();
 
   const pending = session?.status === "pending";
+  const expired = isExpired(session, now);
 
   useEffect(() => {
     if (!session || pending) {
@@ -67,8 +81,8 @@ export function App() {
     const interval = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       void syncAll();
-      // Só o administrador precisa saber de tempos em tempos (pedidos de acesso).
-      if (sessionStore.get()?.admin) void refreshAccount();
+      // Pedidos de acesso (administrador) e vencimento do pagamento (todos).
+      void refreshAccount();
     }, 5 * 60_000);
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("online", onOnline);
@@ -79,6 +93,11 @@ export function App() {
       window.removeEventListener("online", onOnline);
     };
   }, [session?.userId, pending]);
+
+  // Venceu com música tocando (inclusive offline): para na hora.
+  useEffect(() => {
+    if (expired) stop();
+  }, [expired]);
 
   // Avisa antes de fechar com envios em andamento.
   useEffect(() => {
@@ -93,6 +112,7 @@ export function App() {
   if (session === undefined) return null;
   if (!session) return <AuthPage />;
   if (pending) return <PendingPage />;
+  if (expired) return <PaywallPage session={session} />;
 
   return (
     <Shell section={parts[0] ?? ""}>
@@ -109,8 +129,6 @@ export function App() {
           case "playlist":
           case "grupo": // links antigos
             return <GroupPage id={parts[1]} />;
-          case "compartilhado":
-            return <SharedGroupPage shareId={parts[1]} />;
           case "favoritas":
             return <FavoritesPage />;
           case "admin":
@@ -171,6 +189,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
           <Brand playing={player.playing} />
           <SyncButton className="compact" />
         </header>
+        <PaymentBanner />
         {children}
       </main>
       <PlayerBar />
@@ -178,6 +197,19 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
       <TrackSheet />
       <Toast />
       <Dialog />
+    </div>
+  );
+}
+
+/** Aviso de vencimento próximo, com o jeito de pagar. */
+function PaymentBanner() {
+  const session = useStore(sessionStore);
+  if (session?.paidUntil === undefined || daysLeft(session.paidUntil) > WARN_DAYS) return null;
+  return (
+    <div className="access-banner">
+      <Notice tone="warn">
+        Seu acesso vence {dueText(session.paidUntil)} ({formatDate(session.paidUntil)}). {session.paymentInfo}
+      </Notice>
     </div>
   );
 }

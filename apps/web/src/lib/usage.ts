@@ -5,7 +5,8 @@ import { createStore } from "./observable";
 export interface CloudUsage {
   bytes: number;
   quota: number;
-  count: number;
+  /** Músicas no servidor: só vem para quem pode ver o catálogo. */
+  count?: number;
 }
 
 export const usageStore = createStore<CloudUsage | null>(null);

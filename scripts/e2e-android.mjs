@@ -48,6 +48,7 @@ async function signup(p, email, base) {
   await p.getByRole("button", { name: "Criar conta" }).click();
   await p.getByLabel("E-mail").fill(email);
   await p.getByLabel("Senha", { exact: true }).fill("minha-senha-123");
+  await p.getByLabel("Celular (WhatsApp)").fill("11987654321");
   await p.getByLabel("Repita a senha").fill("minha-senha-123");
   const res = p.waitForResponse((r) => r.url().includes("/api/auth/signup/start"));
   await p.locator("form").getByRole("button", { name: "Continuar" }).click();

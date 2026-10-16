@@ -19,8 +19,8 @@ import {
   type ImportRequestInfo,
   type ImportTrackStatus,
   type ItemKind,
+  type AccountBilling,
   type ResolvedTrack,
-  type ShareInfo,
   type SpotFailKind,
   type SpotJob,
   type SignupRequest,
@@ -37,6 +37,10 @@ interface Env {
   MAIL_FROM: string;
   /** Limite TOTAL da nuvem (todas as contas juntas), em GB. */
   QUOTA_GB: string;
+  /** Dias de acesso grátis a partir da aprovação da conta. */
+  TRIAL_DAYS?: string;
+  /** Como pagar: aparece para quem está vencido ou perto de vencer. */
+  PAYMENT_INFO?: string;
   ESCROW_PRIVATE_KEY: string;
   ESCROW_PUBLIC_KEY: string;
   /** E-mails já aprovados de antemão, separados por vírgula ("@dominio.com" libera o domínio todo). */
@@ -62,11 +66,12 @@ interface Env {
   RESEND_API_KEY?: string;
 }
 
-type App = { Bindings: Env; Variables: { userId: string; email: string; admin: boolean } };
+type App = { Bindings: Env; Variables: { userId: string; email: string; admin: boolean; catalog: boolean } };
 type Ctx = Context<App>;
 
 const SESSION_TTL = 1000 * 60 * 60 * 24 * 90; // 90 dias
 const RECOVERY_TTL = 1000 * 60 * 60; // 1 hora
+const DAY = 1000 * 60 * 60 * 24;
 const MAX_SINGLE_UPLOAD = 90 * 1024 * 1024; // limite de corpo do plano gratuito é 100 MB
 const ITEM_KINDS: ItemKind[] = ["track", "playlist", "play"];
 const ID_RE = /^[A-Za-z0-9_.-]{1,96}$/;
@@ -79,7 +84,7 @@ app.onError((err, c) => {
   return c.json({ error: "Erro interno" }, 500);
 });
 
-function fail(status: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 502, message: string): never {
+function fail(status: 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 502, message: string): never {
   throw new HTTPException(status, { message });
 }
 
@@ -105,10 +110,10 @@ async function createSession(c: Ctx, userId: string): Promise<string> {
 
 async function sessionResponse(c: Ctx, userId: string) {
   const u = await c.env.DB.prepare(
-    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status FROM users WHERE id = ?",
+    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status, phone, paid_until, catalog_access FROM users WHERE id = ?",
   )
     .bind(userId)
-    .first<Record<string, string>>();
+    .first<Record<string, string> & BillingRow>();
   if (!u) fail(404, "Conta não encontrada");
   return {
     token: await createSession(c, userId),
@@ -120,7 +125,51 @@ async function sessionResponse(c: Ctx, userId: string) {
     status: u.status as "approved" | "pending",
     // Só aparece para quem é administrador: para os outros, o campo nem existe.
     ...(isAdmin(c.env, u.email) && { admin: true as const }),
+    ...billing(c.env, u.email, u),
   };
+}
+
+// ---------------- Cobrança ----------------
+
+interface BillingRow {
+  phone: string | null;
+  paid_until: number;
+  catalog_access: number;
+}
+
+/** Vencimento, celular, como pagar e acesso ao catálogo. Administrador nunca vence e sempre vê o catálogo. */
+function billing(env: Env, email: string, u: BillingRow): AccountBilling {
+  if (isAdmin(env, email)) return { phone: u.phone, catalog: true };
+  return {
+    paidUntil: u.paid_until,
+    phone: u.phone,
+    paymentInfo: env.PAYMENT_INFO ?? "",
+    ...(u.catalog_access ? { catalog: true as const } : {}),
+  };
+}
+
+/** Celular como +55DDDNÚMERO. Sem "+" e sem código do país, assume Brasil. */
+function normalizePhone(raw: unknown): string | null {
+  const s = String(raw ?? "").trim();
+  const digits = s.replace(/\D/g, "");
+  if (s.startsWith("+")) return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+  if (/^55\d{10,11}$/.test(digits)) return `+${digits}`;
+  if (/^\d{10,11}$/.test(digits)) return `+55${digits}`;
+  return null;
+}
+
+/** Fim do período de teste para quem começa agora. */
+const trialEnd = (env: Env) => Date.now() + Number(env.TRIAL_DAYS ?? 7) * DAY;
+
+/** Soma meses mantendo o dia (31/01 + 1 mês = 28 ou 29/02, e não 03/03). */
+function addMonths(from: number, months: number): number {
+  const d = new Date(from);
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, last));
+  return d.getTime();
 }
 
 const emailList = (raw: string | undefined) =>
@@ -226,6 +275,8 @@ app.post("/auth/signup", async (c) => {
   for (const k of ["authKey", "wrappedMasterKey", "escrowMasterKey", "publicKey", "wrappedPrivateKey"] as const) {
     if (typeof body[k] !== "string" || !body[k]) fail(400, `Campo ausente: ${k}`);
   }
+  const phone = normalizePhone(body.phone);
+  if (!phone) fail(400, "Celular inválido. Use DDD + número, ex.: (11) 98765-4321");
   if (needsCode(c.env, email)) {
     const row = await c.env.DB.prepare("SELECT code_hash, expires_at, attempts FROM signup_codes WHERE email = ?")
       .bind(email)
@@ -247,11 +298,14 @@ app.post("/auth/signup", async (c) => {
   const approved = preApproved(c.env, email);
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO users (id, email, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at, status, approved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, phone, paid_until, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at, status, approved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       email,
+      phone,
+      // O teste começa quando a conta é liberada: já agora, ou quando o administrador aprovar.
+      approved ? trialEnd(c.env) : 0,
       salt,
       await hashAuthKey(salt, body.authKey),
       body.wrappedMasterKey,
@@ -381,8 +435,14 @@ app.post("/auth/reset/finish", async (c) => {
 
 // ---------------- Rotas autenticadas ----------------
 
-/** Rotas que quem ainda espera aprovação pode usar. */
-const PENDING_OK = ["/api/auth/me", "/api/auth/logout"];
+/** Rotas que quem ainda espera aprovação (ou está com o pagamento vencido) pode usar. */
+const PENDING_OK = ["/api/auth/me", "/api/auth/logout", "/api/auth/phone"];
+
+/**
+ * Com o pagamento vencido, o celular continua ajudando a baixar as músicas que os
+ * outros pediram (isso não dá nada para a própria pessoa).
+ */
+const EXPIRED_OK = (path: string) => PENDING_OK.includes(path) || path.startsWith("/api/spot/");
 
 app.use("/*", async (c, next) => {
   if (c.req.path.startsWith("/api/auth/") && !PENDING_OK.includes(c.req.path)) return next();
@@ -390,24 +450,42 @@ app.use("/*", async (c, next) => {
   const token = header.startsWith("Bearer ") ? header.slice(7) : (c.req.query("t") ?? "");
   if (!token) fail(401, "Não autenticado");
   const s = await c.env.DB.prepare(
-    "SELECT s.user_id, u.email, u.status FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
+    "SELECT s.user_id, u.email, u.status, u.paid_until, u.catalog_access FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
   )
     .bind(toB64(await sha256(token)), Date.now())
-    .first<{ user_id: string; email: string; status: string }>();
+    .first<{ user_id: string; email: string; status: string; paid_until: number; catalog_access: number }>();
   if (!s) fail(401, "Sessão expirada");
   if (s.status !== "approved" && !PENDING_OK.includes(c.req.path)) fail(403, "Sua conta ainda espera aprovação");
+  const admin = isAdmin(c.env, s.email);
+  // Pagamento vencido: nada de tocar, baixar, enviar ou sincronizar até o administrador liberar mais meses.
+  if (!admin && s.status === "approved" && s.paid_until < Date.now() && !EXPIRED_OK(c.req.path)) {
+    fail(402, "Seu acesso venceu. Faça o pagamento para continuar ouvindo.");
+  }
   c.set("userId", s.user_id);
   c.set("email", s.email);
-  c.set("admin", isAdmin(c.env, s.email));
+  c.set("admin", admin);
+  c.set("catalog", admin || Boolean(s.catalog_access));
   await next();
 });
 
 /** Situação da conta (o app pergunta de tempos em tempos enquanto espera aprovação). */
 app.get("/auth/me", async (c) => {
-  const row = await c.env.DB.prepare("SELECT status FROM users WHERE id = ?").bind(c.get("userId")).first<{ status: string }>();
-  if (!c.get("admin")) return c.json({ status: row?.status });
+  const row = await c.env.DB.prepare("SELECT status, phone, paid_until, catalog_access FROM users WHERE id = ?")
+    .bind(c.get("userId"))
+    .first<{ status: string } & BillingRow>();
+  if (!row) fail(404, "Conta não encontrada");
+  const info = { status: row.status, ...billing(c.env, c.get("email"), row) };
+  if (!c.get("admin")) return c.json(info);
   const pending = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first<{ n: number }>();
-  return c.json({ status: row?.status, admin: true, pendingRequests: pending?.n ?? 0 });
+  return c.json({ ...info, admin: true, pendingRequests: pending?.n ?? 0 });
+});
+
+/** Contas criadas antes de o celular ser obrigatório completam o cadastro por aqui. */
+app.put("/auth/phone", async (c) => {
+  const phone = normalizePhone((await c.req.json<{ phone: string }>()).phone);
+  if (!phone) fail(400, "Celular inválido. Use DDD + número, ex.: (11) 98765-4321");
+  await c.env.DB.prepare("UPDATE users SET phone = ? WHERE id = ?").bind(phone, c.get("userId")).run();
+  return c.json({ phone });
 });
 
 app.post("/auth/logout", async (c) => {
@@ -481,7 +559,11 @@ async function recordBlob(c: Ctx, id: string, size: number) {
     .run();
 }
 
-app.get("/blobs", async (c) => c.json(await usage(c.env)));
+app.get("/blobs", async (c) => {
+  const u = await usage(c.env);
+  // Quantas músicas existem no servidor só aparece para quem pode ver o catálogo.
+  return c.json(c.get("catalog") ? u : { bytes: u.bytes, quota: u.quota });
+});
 
 app.on("HEAD", "/blobs/:id", async (c) => {
   const head = await c.env.BUCKET.head(r2Key(c.get("userId"), checkId(c.req.param("id"))));
@@ -522,24 +604,9 @@ app.post("/blobs/:id/mpu/:uploadId/complete", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Dono do blob: o próprio usuário ou alguém que compartilhou um grupo com ele. */
-async function resolveBlobOwner(c: Ctx, id: string): Promise<string> {
-  const me = c.get("userId");
-  const owner = c.req.query("owner") || me;
-  if (owner === me) return me;
-  const ok = await c.env.DB.prepare(
-    "SELECT 1 FROM share_blobs b JOIN shares s ON s.id = b.share_id WHERE b.owner = ? AND b.blob_id = ? AND s.to_user = ? LIMIT 1",
-  )
-    .bind(owner, id, me)
-    .first();
-  if (!ok) fail(403, "Sem acesso a este arquivo");
-  return owner;
-}
-
 app.get("/blobs/:id", async (c) => {
   const id = checkId(c.req.param("id"));
-  const owner = await resolveBlobOwner(c, id);
-  return serveObject(c, r2Key(owner, id), "application/octet-stream");
+  return serveObject(c, r2Key(c.get("userId"), id), "application/octet-stream");
 });
 
 /** Entrega um arquivo do R2, com suporte a Range (o player pula para o meio da música). */
@@ -753,8 +820,12 @@ app.post("/songs/:id/done", async (c) => {
   return c.json({ ok: true });
 });
 
-/** Busca no catálogo por artista, título ou álbum. */
+/**
+ * Busca no catálogo por artista, título ou álbum. Só para quem o administrador liberou:
+ * as outras contas não ficam sabendo o que existe no servidor.
+ */
 app.get("/songs/search", async (c) => {
+  if (!c.get("catalog")) return c.notFound();
   const words = plain(c.req.query("q") ?? "").split(" ").filter(Boolean).slice(0, 6);
   if (!words.length) return c.json({ songs: [] });
   const { results } = await c.env.DB.prepare(
@@ -880,8 +951,6 @@ async function deleteUser(env: Env, id: string) {
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM share_blobs WHERE share_id IN (SELECT id FROM shares WHERE from_user = ?1 OR to_user = ?1)").bind(id),
-    env.DB.prepare("DELETE FROM shares WHERE from_user = ?1 OR to_user = ?1").bind(id),
     env.DB.prepare("DELETE FROM import_tracks WHERE request_id IN (SELECT id FROM import_requests WHERE user_id = ?)").bind(id),
     env.DB.prepare("DELETE FROM import_requests WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM import_devices WHERE user_id = ?").bind(id),
@@ -897,15 +966,30 @@ async function deleteUser(env: Env, id: string) {
 /** Pessoas (pedidos de acesso primeiro) e o espaço da nuvem. */
 app.get("/admin/overview", async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT u.id, u.email, u.status, u.created_at AS createdAt,
+    `SELECT u.id, u.email, u.status, u.created_at AS createdAt, u.phone, u.paid_until AS paidUntil, u.catalog_access AS catalogAccess,
             (SELECT COUNT(*) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS songs,
             (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS bytes,
             (SELECT MAX(created_at) FROM sessions WHERE user_id = u.id) AS lastLogin
      FROM users u ORDER BY (u.status = 'pending') DESC, u.created_at DESC`,
-  ).all<{ id: string; email: string; status: string; createdAt: number; songs: number; bytes: number; lastLogin: number | null }>();
+  ).all<{
+    id: string;
+    email: string;
+    status: string;
+    createdAt: number;
+    phone: string | null;
+    paidUntil: number;
+    catalogAccess: number;
+    songs: number;
+    bytes: number;
+    lastLogin: number | null;
+  }>();
   return c.json({
     usage: await usage(c.env),
-    users: results.map((u) => ({ ...u, admin: isAdmin(c.env, u.email), me: u.id === c.get("userId") })),
+    paymentInfo: c.env.PAYMENT_INFO ?? "",
+    users: results.map(({ catalogAccess, ...u }) => {
+      const admin = isAdmin(c.env, u.email);
+      return { ...u, admin, catalog: admin || Boolean(catalogAccess), me: u.id === c.get("userId") };
+    }),
   });
 });
 
@@ -913,9 +997,40 @@ app.post("/admin/users/:id/approve", async (c) => {
   const id = checkId(c.req.param("id"));
   const u = await c.env.DB.prepare("SELECT email FROM users WHERE id = ? AND status = 'pending'").bind(id).first<{ email: string }>();
   if (!u) fail(404, "Pedido não encontrado");
-  await c.env.DB.prepare("UPDATE users SET status = 'approved', approved_at = ? WHERE id = ?").bind(Date.now(), id).run();
+  // O período de teste começa agora, na aprovação.
+  await c.env.DB.prepare("UPDATE users SET status = 'approved', approved_at = ?, paid_until = MAX(paid_until, ?) WHERE id = ?")
+    .bind(Date.now(), trialEnd(c.env), id)
+    .run();
   const base = c.env.APP_URL || new URL(c.req.url).origin;
   c.executionCtx.waitUntil(sendMail(c.env, u.email, "Seu acesso ao Yfitops foi liberado", `Pode entrar: ${base}`));
+  return c.json({ ok: true });
+});
+
+/**
+ * Libera meses de acesso, contados do vencimento atual (ou de agora, se já venceu),
+ * para quem renova antes do fim não perder dias. Com "block", corta o acesso na hora.
+ */
+app.post("/admin/users/:id/access", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const { months, block } = await c.req.json<{ months?: number; block?: boolean }>();
+  const u = await c.env.DB.prepare("SELECT paid_until FROM users WHERE id = ? AND status = 'approved'").bind(id).first<{ paid_until: number }>();
+  if (!u) fail(404, "Conta não encontrada");
+  let paidUntil = Date.now();
+  if (!block) {
+    const n = Number(months);
+    if (!Number.isInteger(n) || n < 1 || n > 36) fail(400, "Escolha de 1 a 36 meses");
+    paidUntil = addMonths(Math.max(Date.now(), u.paid_until), n);
+  }
+  await c.env.DB.prepare("UPDATE users SET paid_until = ? WHERE id = ?").bind(paidUntil, id).run();
+  return c.json({ paidUntil });
+});
+
+/** Libera (ou tira) a busca no catálogo inteiro. */
+app.post("/admin/users/:id/catalog", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const { allowed } = await c.req.json<{ allowed: boolean }>();
+  const res = await c.env.DB.prepare("UPDATE users SET catalog_access = ? WHERE id = ?").bind(allowed ? 1 : 0, id).run();
+  if (!res.meta.changes) fail(404, "Conta não encontrada");
   return c.json({ ok: true });
 });
 
@@ -1567,76 +1682,6 @@ app.get("/lookup/artist", async (c) => {
     /* sem resposta: fica "Artista desconhecido" */
   }
   return c.json({ artist: "" });
-});
-
-// ---------------- Compartilhamento ----------------
-
-app.get("/users/lookup", async (c) => {
-  const u = await c.env.DB.prepare("SELECT id, email, public_key FROM users WHERE email = ?")
-    .bind(normalizeEmail(c.req.query("email") ?? ""))
-    .first<{ id: string; email: string; public_key: string }>();
-  if (!u) fail(404, "Ninguém com esse e-mail");
-  return c.json({ userId: u.id, email: u.email, publicKey: u.public_key });
-});
-
-app.get("/shares", async (c) => {
-  const me = c.get("userId");
-  const { results } = await c.env.DB.prepare(
-    `SELECT s.id, s.from_user AS fromUser, f.email AS fromEmail, s.to_user AS toUser, t.email AS toEmail,
-            s.payload, s.updated_at AS updatedAt
-     FROM shares s JOIN users f ON f.id = s.from_user JOIN users t ON t.id = s.to_user
-     WHERE s.to_user = ? OR s.from_user = ? ORDER BY s.updated_at DESC`,
-  )
-    .bind(me, me)
-    .all<ShareInfo>();
-  return c.json({ shares: results });
-});
-
-app.put("/shares/:id", async (c) => {
-  const id = checkId(c.req.param("id"));
-  const me = c.get("userId");
-  const { toUser, payload, blobIds } = await c.req.json<{ toUser: string; payload: string; blobIds: string[] }>();
-  if (typeof payload !== "string" || payload.length > 4 * 1024 * 1024) fail(400, "Compartilhamento grande demais");
-  if (!Array.isArray(blobIds) || blobIds.length > 20000) fail(400, "Lista de arquivos inválida");
-  const existing = await c.env.DB.prepare("SELECT from_user FROM shares WHERE id = ?").bind(id).first<{ from_user: string }>();
-  if (existing && existing.from_user !== me) fail(403, "Compartilhamento de outra pessoa");
-  const target = await c.env.DB.prepare("SELECT 1 FROM users WHERE id = ?").bind(toUser).first();
-  if (!target) fail(404, "Destinatário não existe");
-  // Só libera blobs que realmente pertencem a quem compartilha.
-  const owned = new Set<string>();
-  for (let i = 0; i < blobIds.length; i += 90) {
-    const slice = blobIds.slice(i, i + 90).map(checkId);
-    const { results } = await c.env.DB.prepare(
-      `SELECT id FROM blobs WHERE owner = ? AND id IN (${slice.map(() => "?").join(",")})`,
-    )
-      .bind(me, ...slice)
-      .all<{ id: string }>();
-    results.forEach((r) => owned.add(r.id));
-  }
-  const now = Date.now();
-  const stmts = [
-    c.env.DB.prepare(
-      `INSERT INTO shares (id, from_user, to_user, payload, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-       ON CONFLICT (id) DO UPDATE SET to_user = excluded.to_user, payload = excluded.payload, updated_at = excluded.updated_at`,
-    ).bind(id, me, toUser, payload, now),
-    c.env.DB.prepare("DELETE FROM share_blobs WHERE share_id = ?").bind(id),
-    ...[...owned].map((b) => c.env.DB.prepare("INSERT INTO share_blobs (share_id, owner, blob_id) VALUES (?, ?, ?)").bind(id, me, b)),
-  ];
-  for (let i = 0; i < stmts.length; i += 100) await c.env.DB.batch(stmts.slice(i, i + 100));
-  return c.json({ ok: true });
-});
-
-app.delete("/shares/:id", async (c) => {
-  const id = checkId(c.req.param("id"));
-  const me = c.get("userId");
-  const row = await c.env.DB.prepare("SELECT from_user, to_user FROM shares WHERE id = ?").bind(id).first<{ from_user: string; to_user: string }>();
-  if (!row) return c.json({ ok: true });
-  if (row.from_user !== me && row.to_user !== me) fail(403, "Sem permissão");
-  await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM share_blobs WHERE share_id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM shares WHERE id = ?").bind(id),
-  ]);
-  return c.json({ ok: true });
 });
 
 export default {
