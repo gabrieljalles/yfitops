@@ -24,6 +24,19 @@ export interface ResolvedTrack {
   deezerId?: string;
 }
 
+/** Resultado da busca pelo nome da música (GET /search/tracks). Pedir = mandar `url` para a fila. */
+export interface TrackSearchHit {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  /** Segundos. */
+  duration: number;
+  cover: string | null;
+  /** Link da música no Deezer: vira um pedido normal (o celular acha no YouTube e baixa). */
+  url: string;
+}
+
 /** Escolhas de quem pediu. */
 export interface ImportOpts {
   tags?: string[];

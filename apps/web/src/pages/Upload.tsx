@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ImportRequestInfo, ImportTrackStatus } from "@yfitops/core";
+import type { ImportRequestInfo, ImportTrackStatus, TrackSearchHit } from "@yfitops/core";
 import { Icon } from "../components/Icon";
 import { confirmDialog } from "../lib/dialog";
 import { StorageBar } from "../components/StorageBar";
@@ -7,14 +7,18 @@ import { TagInput } from "../components/TagInput";
 import {
   answerLinkAsk,
   answerLinkPick,
+  clearSearch,
   dropRequest,
   finished,
   importsStore,
   isDeezerLink,
+  isImportLink,
+  isSearchText,
   isSpotifyLink,
   isYouTubeLink,
   requestLink,
   requestProgress,
+  requestTrack,
   retryRequest,
   serviceName,
   setImportLink,
@@ -23,6 +27,7 @@ import {
   waitsForMyPhone,
 } from "../lib/imports";
 import { useStore } from "../lib/observable";
+import { formatTime } from "../lib/tracks";
 
 /** O embed do Spotify só entrega as 50 primeiras músicas de uma playlist. */
 function SpotifyLimit() {
@@ -36,8 +41,10 @@ function SpotifyLimit() {
 
 export function UploadPage() {
   // Vem de um store (e não de useState) para sobreviver à troca de tela.
-  const { link, sending, error: linkError, ask, pick, tags, requests } = useStore(importsStore);
+  const { link, sending, error: linkError, ask, pick, tags, requests, results, resultsFor, searching, requested } = useStore(importsStore);
   const asking = !!pick || ask;
+  /** Digitou um nome (e não colou um link): o botão busca em vez de pedir. */
+  const searchMode = !isImportLink(link) && isSearchText(link);
 
   /** Serviço do link colado: muda a cor da borda, o ícone e a cor do botão. */
   const brand = isYouTubeLink(link)
@@ -54,25 +61,29 @@ export function UploadPage() {
       <div className={`link-import${brand ? ` linked ${brand}` : ""}`}>
         <label className="link-field">
           <span className="link-brand" aria-hidden="true">
-            <Icon name={brand ?? "youtube"} size={20} />
+            <Icon name={brand ?? (searchMode ? "search" : "youtube")} size={20} />
           </span>
           <input
-            type="url"
+            type="text"
+            inputMode="search"
+            enterKeyHint={searchMode ? "search" : "go"}
+            autoComplete="off"
+            aria-label="Link ou nome da música"
             value={link}
-            placeholder="Cole um link do YouTube, Spotify ou Deezer"
+            placeholder="Cole um link ou digite o nome da música"
             disabled={sending || asking}
             onChange={(e) => setImportLink(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void requestLink()}
           />
         </label>
-        <button className="primary" disabled={sending || asking || !link.trim()} onClick={() => void requestLink()}>
-          {sending ? "pedindo..." : "pedir"}
+        <button className="primary" disabled={sending || searching || asking || !link.trim()} onClick={() => void requestLink()}>
+          {sending ? "pedindo..." : searching ? "buscando..." : searchMode ? "buscar" : "pedir"}
         </button>
         {linkError && <span className="small err">{linkError}</span>}
       </div>
 
-      {/* Opcional: só aparece com um link válido (ou se já houver tags escolhidas). */}
-      {(brand || tags.length > 0) && (
+      {/* Opcional: só aparece com um link válido, com resultados de busca (ou se já houver tags escolhidas). */}
+      {(brand || results || tags.length > 0) && (
         <div className="import-tags">
           <span className="muted small">
             Tags para todas as músicas <span className="muted">(opcional)</span>
@@ -80,6 +91,8 @@ export function UploadPage() {
           <TagInput tags={tags} onChange={setImportTags} placeholder="ex.: academia, anos-80…" disabled={sending} />
         </div>
       )}
+
+      {results && <SearchResults hits={results} query={resultsFor} requested={requested} />}
 
       {pick && (
         <div className="import-result">
@@ -140,6 +153,46 @@ export function UploadPage() {
         </>
       )}
     </div>
+  );
+}
+
+/** Músicas achadas pelo nome: a pessoa escolhe a certa e pede (vai para a fila como qualquer link). */
+function SearchResults({ hits, query, requested }: { hits: TrackSearchHit[]; query: string; requested: string[] }) {
+  return (
+    <section className="search-results">
+      <div className="section-head">
+        <p className="muted small">
+          {hits.length
+            ? `Músicas para "${query}". Toque em pedir na certa.`
+            : `Nada encontrado para "${query}". Tente com o nome do artista junto, ou cole um link.`}
+        </p>
+        <button className="link" onClick={clearSearch}>
+          fechar
+        </button>
+      </div>
+      {hits.length > 0 && (
+        <ul className="tracks">
+          {hits.map((h) => {
+            const done = requested.includes(h.id);
+            return (
+              <li key={h.id}>
+                <span className="track-main search-hit">
+                  {h.cover ? <img className="search-cover" src={h.cover} alt="" loading="lazy" /> : <span className="search-cover blank" />}
+                  <span className="track-text">
+                    <span className="track-title">{h.title}</span>
+                    <span className="track-sub">{[h.artist, h.album].filter(Boolean).join(" · ")}</span>
+                  </span>
+                  {h.duration > 0 && <span className="track-time">{formatTime(h.duration)}</span>}
+                </span>
+                <button className={`chip${done ? " on" : ""}`} disabled={done} onClick={() => void requestTrack(h)}>
+                  {done ? "pedida" : "pedir"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

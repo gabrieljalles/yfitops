@@ -1,4 +1,4 @@
-import { MAX_SONG_SECONDS, TOO_LONG, TOO_LONG_LOCAL, type ImportOpts, type ImportRequestInfo, type ImportTrackInfo, type ResolvedTrack } from "@yfitops/core";
+import { MAX_SONG_SECONDS, TOO_LONG, TOO_LONG_LOCAL, type ImportOpts, type ImportRequestInfo, type ImportTrackInfo, type ResolvedTrack, type TrackSearchHit } from "@yfitops/core";
 import { api } from "./api";
 import { addSong, songTrackId } from "./catalog";
 import { createPlaylist, libraryStore, saveItem } from "./library";
@@ -32,6 +32,12 @@ export interface ImportsState {
   /** Celulares ajudando agora. */
   helpers: number;
   loaded: boolean;
+  /** Busca pelo nome da música: resultados (null = nenhuma busca feita) e o texto buscado. */
+  results: TrackSearchHit[] | null;
+  resultsFor: string;
+  searching: boolean;
+  /** Resultados já pedidos (o botão vira "pedida"). */
+  requested: string[];
 }
 
 export const importsStore = createStore<ImportsState>({
@@ -44,6 +50,10 @@ export const importsStore = createStore<ImportsState>({
   requests: [],
   helpers: 0,
   loaded: false,
+  results: null,
+  resultsFor: "",
+  searching: false,
+  requested: [],
 });
 const patch = (p: Partial<ImportsState>) => importsStore.set((s) => ({ ...s, ...p }));
 
@@ -63,6 +73,41 @@ export const isYouTubeLink = (t: string) => hostIs(t, /(^|\.)(youtube\.com|youtu
 export const isSpotifyLink = (t: string) => hostIs(t, /(^|\.)(spotify\.com|spotify\.link)$/i);
 export const isDeezerLink = (t: string) => hostIs(t, /(^|\.)(deezer\.com|deezer\.page\.link|dzr\.page\.link)$/i);
 export const isImportLink = (t: string) => isYouTubeLink(t) || isSpotifyLink(t) || isDeezerLink(t);
+/** O campo tem um nome de música (e não um link)? */
+export const isSearchText = (t: string) => t.trim().length >= 2 && !/^https?:\/\//i.test(t.trim()) && !/^[\w-]+(\.[\w-]+)+\//.test(t.trim());
+
+/** Busca pelo nome no campo: mostra as músicas para a pessoa escolher qual pedir. */
+export async function searchTracks() {
+  const q = importsStore.get().link.trim();
+  if (!isSearchText(q) || importsStore.get().searching) return;
+  patch({ searching: true, error: "" });
+  try {
+    const { tracks } = await api.json<{ tracks: TrackSearchHit[] }>(`/search/tracks?q=${encodeURIComponent(q)}`);
+    patch({ results: tracks, resultsFor: q });
+  } catch (e) {
+    patch({ error: (e as Error).message });
+  } finally {
+    patch({ searching: false });
+  }
+}
+
+/** Pede uma música achada na busca (vai para a fila como um link do Deezer). */
+export async function requestTrack(hit: TrackSearchHit) {
+  const { tags, requested } = importsStore.get();
+  if (requested.includes(hit.id)) return;
+  patch({ requested: [...requested, hit.id] });
+  try {
+    await api.json("/imports", { method: "POST", json: { url: hit.url, opts: { tags, playlist: false } satisfies ImportOpts } });
+    toast(`Pedido na fila: ${hit.title}`);
+    await refreshImports();
+  } catch (e) {
+    patch({ requested: importsStore.get().requested.filter((id) => id !== hit.id) });
+    toast((e as Error).message, "error");
+  }
+}
+
+/** Fecha os resultados da busca. */
+export const clearSearch = () => patch({ results: null, resultsFor: "", requested: [] });
 
 /**
  * Link do YouTube de um vídeo DENTRO de uma lista (watch?v=X&list=Y), o que
@@ -139,7 +184,11 @@ export async function requestLink() {
   const { link, tags, sending } = importsStore.get();
   let url = link.trim();
   if (!url || sending) return;
-  if (!isImportLink(url)) return patch({ error: "Cole um link do YouTube, do Spotify ou do Deezer" });
+  // Não é link: é o nome de uma música. Busca e deixa a pessoa escolher.
+  if (!isImportLink(url)) {
+    if (isSearchText(url)) return void searchTracks();
+    return patch({ error: "Cole um link do YouTube, do Spotify ou do Deezer, ou digite o nome da música" });
+  }
   // Vídeo dentro de um mix/playlist: só esta música ou a lista toda?
   const both = videoInList(url);
   if (both) {

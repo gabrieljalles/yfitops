@@ -2358,3 +2358,37 @@ select {
 :root[data-theme="light"] .nebula i {
   mix-blend-mode: normal;
 }
+
+/* ---------- Busca pelo nome da música (Enviar) ---------- */
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.search-results .section-head p {
+  margin: 0;
+}
+.search-results .tracks li {
+  gap: 8px;
+  padding-right: 6px;
+}
+.search-hit {
+  cursor: default;
+}
+.search-cover {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.search-results .section-head {
+  align-items: flex-start;
+  gap: 12px;
+}
+.search-results .section-head p {
+  flex: 1;
+  min-width: 0;
+}

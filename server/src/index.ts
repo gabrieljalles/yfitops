@@ -26,6 +26,7 @@ import {
   type SignupRequest,
   type SongInfo,
   type SongQuery,
+  type TrackSearchHit,
   type SyncItem,
   type SyncPushItem,
 } from "@yfitops/core";
@@ -1722,6 +1723,37 @@ app.post("/spot/track/:id", async (c) => {
  * no Deezer e no iTunes, e só aceita um resultado com o mesmo título: um artista
  * errado é pior que "Artista desconhecido".
  */
+/**
+ * Busca de músicas pelo nome, no catálogo público do Deezer (o servidor não consegue
+ * buscar no YouTube). Quem pede escolhe uma e ela vira um pedido normal pelo link do Deezer.
+ */
+app.get("/search/tracks", async (c) => {
+  const q = text(c.req.query("q"), 120);
+  if (q.length < 2) return c.json({ tracks: [] });
+  let res: Response;
+  try {
+    res = await fetch(`https://api.deezer.com/search?limit=20&q=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(8000) });
+  } catch {
+    fail(502, "A busca não respondeu agora. Tente de novo ou cole um link.");
+  }
+  if (!res.ok) fail(502, "A busca não respondeu agora. Tente de novo ou cole um link.");
+  const dz = await res.json<{
+    data?: { id?: number; title?: string; readable?: boolean; duration?: number; link?: string; artist?: { name?: string }; album?: { title?: string; cover_medium?: string } }[];
+  }>();
+  const tracks: TrackSearchHit[] = (dz.data ?? [])
+    .filter((t) => t.id && t.title && t.readable !== false)
+    .map((t) => ({
+      id: String(t.id),
+      title: t.title!,
+      artist: t.artist?.name ?? "",
+      album: t.album?.title ?? "",
+      duration: t.duration ?? 0,
+      cover: t.album?.cover_medium ?? null,
+      url: `https://www.deezer.com/track/${t.id}`,
+    }));
+  return c.json({ tracks });
+});
+
 app.get("/lookup/artist", async (c) => {
   const title = text(c.req.query("title"), 200);
   if (!title) return c.json({ artist: "" });
