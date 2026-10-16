@@ -135,10 +135,15 @@ let lastReconcile = 0;
  */
 export async function reconcileMerges(force = false) {
   if (!force && Date.now() - lastReconcile < RECONCILE_EVERY) return;
+  // Só com a biblioteca em dia: uma lista incompleta (sync que falhou, aparelho
+  // recém-logado) faria o servidor achar que a pessoa não tem mais essas músicas.
+  const lib = libraryStore.get();
+  if (!lib.lastSync || lib.error || lib.offline) return;
   lastReconcile = Date.now();
-  const tracks = libraryStore.get().tracks;
+  const tracks = lib.tracks;
+  // Vai mesmo vazia: a lista também diz ao servidor quais músicas esta conta tem
+  // (as bibliotecas são criptografadas). Música que ninguém tem sai na faxina.
   const ids = [...new Set(Object.values(tracks).flatMap((t) => (t.song ? [t.song] : [])))];
-  if (!ids.length) return;
   const { merged, removed } = await api.json<{ merged: Record<string, SongInfo>; removed: string[] }>("/songs/resolve", {
     method: "POST",
     json: { ids },

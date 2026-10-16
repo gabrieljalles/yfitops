@@ -852,6 +852,7 @@ app.get("/songs/:id/:part{audio|cover}", async (c) => {
 app.post("/songs/resolve", async (c) => {
   const { ids } = await c.req.json<{ ids: string[] }>();
   if (!Array.isArray(ids) || ids.length > 5000) fail(400, "Lista inválida");
+  await recordOwners(c, ids);
   const merged: Record<string, SongInfo> = {};
   const removed: string[] = [];
   for (let i = 0; i < ids.length; i += 90) {
@@ -875,6 +876,68 @@ app.post("/songs/resolve", async (c) => {
   }
   return c.json({ merged, removed });
 });
+
+/**
+ * A lista que o app manda é a biblioteca inteira (só as músicas do catálogo): ela
+ * substitui o que a conta tinha antes. É assim que a faxina sabe que música ficou sem dono.
+ */
+async function recordOwners(c: Ctx, ids: unknown[]) {
+  const me = c.get("userId");
+  const valid = [...new Set(ids.filter((x): x is string => typeof x === "string" && ID_RE.test(x)))];
+  const stmts = [c.env.DB.prepare("DELETE FROM song_owners WHERE user_id = ?").bind(me)];
+  // Até 45 músicas por comando (o D1 aceita até 100 valores por comando).
+  for (let i = 0; i < valid.length; i += 45) {
+    const slice = valid.slice(i, i + 45);
+    stmts.push(
+      c.env.DB.prepare(`INSERT OR IGNORE INTO song_owners (user_id, song_id) VALUES ${slice.map(() => "(?, ?)").join(", ")}`).bind(
+        ...slice.flatMap((id) => [me, id]),
+      ),
+    );
+  }
+  stmts.push(c.env.DB.prepare("UPDATE users SET library_reported_at = ? WHERE id = ?").bind(Date.now(), me));
+  await c.env.DB.batch(stmts);
+}
+
+/** Músicas sem dono ficam assim alguns dias antes de sair (dá tempo de alguém trazer de volta). */
+const ORPHAN_GRACE = 3 * 24 * 60 * 60 * 1000;
+
+/** Uma música tem dono: alguém a tem na biblioteca (ou uma duplicada que foi juntada nela), ou ainda vai receber de um pedido. */
+const HAS_OWNER = `(
+  EXISTS (SELECT 1 FROM song_owners o WHERE o.song_id = songs.id)
+  OR EXISTS (SELECT 1 FROM song_owners o JOIN songs m ON m.id = o.song_id WHERE m.merged_into = songs.id)
+  OR EXISTS (SELECT 1 FROM import_tracks t WHERE t.song_id = songs.id AND t.delivered = 0)
+)`;
+
+/** Contas aprovadas que ainda não informaram suas músicas (enquanto houver, nada sem dono é apagado). */
+async function ownersWaiting(env: Env): Promise<string[]> {
+  const { results } = await env.DB.prepare("SELECT email FROM users WHERE status = 'approved' AND library_reported_at IS NULL ORDER BY email").all<{
+    email: string;
+  }>();
+  return results.map((r) => r.email);
+}
+
+/**
+ * Apaga músicas que ninguém tem na biblioteca há mais de ORPHAN_GRACE. Só roda
+ * quando todas as contas já informaram suas músicas pelo menos uma vez.
+ */
+async function removeOrphans(env: Env): Promise<{ orphans: number; waiting: string[] }> {
+  const waiting = await ownersWaiting(env);
+  if (waiting.length) return { orphans: 0, waiting };
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE songs SET orphan_since = NULL WHERE status = 'ready' AND orphan_since IS NOT NULL AND ${HAS_OWNER}`),
+    // Envios de menos de 1 dia ainda podem estar chegando na biblioteca de quem pediu.
+    env.DB.prepare(`UPDATE songs SET orphan_since = ? WHERE status = 'ready' AND orphan_since IS NULL AND created_at < ? AND NOT ${HAS_OWNER}`).bind(
+      now,
+      now - 24 * 60 * 60 * 1000,
+    ),
+  ]);
+  const { results } = await env.DB.prepare("SELECT id FROM songs WHERE status = 'ready' AND orphan_since < ? LIMIT 500")
+    .bind(now - ORPHAN_GRACE)
+    .all<{ id: string }>();
+  for (let i = 0; i < results.length; i += 90) await removeSongs(env, results.slice(i, i + 90).map((r) => r.id));
+  return { orphans: results.length, waiting };
+}
 
 /**
  * Faxina diária (Cron): junta músicas duplicadas que escaparam na hora do envio
@@ -929,8 +992,13 @@ async function tidyCatalog(env: Env) {
     env.DB.prepare("DELETE FROM import_requests WHERE created_at < ?").bind(month),
     env.DB.prepare("DELETE FROM import_devices WHERE last_seen < ?").bind(Date.now() - 7 * 24 * 60 * 60 * 1000),
   ]);
-  console.log(`faxina do catálogo: ${stale.length} envios abandonados, ${merged} duplicadas juntadas`);
-  return { abandoned: stale.length, merged };
+  // Músicas que ninguém tem mais na biblioteca.
+  const { orphans, waiting } = await removeOrphans(env);
+  console.log(
+    `faxina do catálogo: ${stale.length} envios abandonados, ${merged} duplicadas juntadas, ${orphans} sem dono apagadas` +
+      (waiting.length ? ` (sem dono: esperando ${waiting.length} conta(s) abrirem o app)` : ""),
+  );
+  return { abandoned: stale.length, merged, orphans, waiting };
 }
 
 // ---------------- Painel administrativo ----------------
@@ -955,6 +1023,7 @@ async function deleteUser(env: Env, id: string) {
     env.DB.prepare("DELETE FROM import_requests WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM import_devices WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM items WHERE owner = ?").bind(id),
+    env.DB.prepare("DELETE FROM song_owners WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM blobs WHERE owner = ?").bind(id),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM recovery_tokens WHERE user_id = ?").bind(id),
@@ -986,6 +1055,8 @@ app.get("/admin/overview", async (c) => {
   return c.json({
     usage: await usage(c.env),
     paymentInfo: c.env.PAYMENT_INFO ?? "",
+    // Faxina de músicas sem dono: só começa quando todos já abriram o app.
+    ownersWaiting: await ownersWaiting(c.env),
     users: results.map(({ catalogAccess, ...u }) => {
       const admin = isAdmin(c.env, u.email);
       return { ...u, admin, catalog: admin || Boolean(catalogAccess), me: u.id === c.get("userId") };

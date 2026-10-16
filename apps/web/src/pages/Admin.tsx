@@ -33,6 +33,8 @@ interface AdminUser {
 
 interface Overview {
   usage: { bytes: number; quota: number; count: number };
+  /** Contas que ainda não abriram o app desde a faxina de músicas sem dono (até lá, ela não apaga nada). */
+  ownersWaiting: string[];
   users: AdminUser[];
 }
 
@@ -245,7 +247,16 @@ export default function AdminPage() {
         >
           juntar duplicadas agora
         </button>
-        <p className="muted small">A faxina também roda sozinha todo dia de madrugada.</p>
+        <p className="muted small">
+          A faxina também roda sozinha todo dia de madrugada. Ela junta duplicadas e apaga músicas que ninguém tem na biblioteca há
+          mais de 3 dias.
+        </p>
+        {data.ownersWaiting.length > 0 && (
+          <p className="small tone-text-warn">
+            Músicas sem dono ainda não são apagadas: falta {data.ownersWaiting.length === 1 ? "esta pessoa abrir" : "estas pessoas abrirem"} o
+            app pelo menos uma vez: {data.ownersWaiting.join(", ")}.
+          </p>
+        )}
       </section>
 
       <Consumption />
