@@ -2315,3 +2315,8 @@ select {
     text-align: left;
   }
 }
+.install-glyph {
+  display: inline-flex;
+  vertical-align: -3px;
+  color: var(--accent);
+}
