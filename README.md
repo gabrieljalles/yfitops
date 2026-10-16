@@ -2,12 +2,7 @@
 
 Player de música pessoal na nuvem: suas músicas criptografadas na Cloudflare (R2 + D1 + Workers), tocando em qualquer lugar.
 
-- **Qualquer formato, sem perda de qualidade:**
-  - comuns e leves (MP3, AAC/M4A, OGG, Opus) ficam **exatamente como estão**;
-  - sem perda e pesados (WAV, AIFF, ALAC, APE, WavPack, TTA, FLAC) viram **FLAC**. Antes de aceitar, o app confere bit a bit que o áudio é idêntico ao original; se não for, guarda o original;
-  - DSD (DSF/DFF) vira FLAC 24-bit/176,4 kHz (conversão padrão DSD→PCM; não é bit a bit por natureza);
-  - com perda incomuns (WMA, AC3, DTS, MP2…): o original fica intacto, mais uma versão tocável;
-  - vídeos (MP4, MKV, WEBM, MOV…): o áudio é extraído **sem reconverter** e o vídeo é descartado.
+- **Músicas só por link** (YouTube, Spotify ou Deezer). O pedido entra numa fila; um celular Android com o app (no Wi-Fi) baixa o áudio e envia ao servidor. Só quem pediu recebe a música na biblioteca; o celular que baixou não guarda nada. Músicas com mais de 13 minutos não entram.
 - **Versão leve** Opus 160 kbps (WebCodecs) para os dados móveis. O download offline deixa escolher **normal** (Opus) ou **máxima** (FLAC).
 - **Criptografia no aparelho.** O R2 e o D1 só guardam dados ilegíveis. IDs de arquivo são HMAC do conteúdo (um "magnet" privado, que deduplica sem revelar nada), e a chave de cada arquivo também é derivada do conteúdo dentro da sua conta: arquivos repetidos (a mesma capa num álbum, a mesma música em dois formatos) geram exatamente o mesmo cifrado.
 - **Capas:** qualquer imagem é recortada num quadrado pelo centro (cortando o lado maior), recebe por cima a textura de capa de disco gasta (`apps/web/public/textura_vinil_branca.png`) e vira um WebP de 300×300 com cerca de 8–30 KB. Sem capa, aparece um vinil desenhado, sem custo de armazenamento.
@@ -44,8 +39,7 @@ Sem `RESEND_API_KEY`, os e-mails (código de cadastro e link de "esqueci a senha
 ```bash
 npm test                                                     # unidade (criptografia, blocos, decisões)
 cd packages/core && API_URL=http://127.0.0.1:8787 npx vitest run   # API real (Worker com DEV_MODE=1)
-npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, envio, FLAC verificado, tocar, capa, tags, grupos, offline normal/máxima, sync, compartilhamento
-npm run e2e:formats -- <pasta>                               # envia todos os arquivos da pasta e confere tratamento e reprodução de cada formato
+npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, compartilhamento
 ```
 
 ## Publicar na Cloudflare (plano gratuito)

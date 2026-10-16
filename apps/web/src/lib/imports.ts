@@ -1,7 +1,6 @@
-import type { ImportOpts, ImportRequestInfo, ImportTrackInfo, ResolvedTrack } from "@yfitops/core";
+import { TOO_LONG, type ImportOpts, type ImportRequestInfo, type ImportTrackInfo, type ResolvedTrack } from "@yfitops/core";
 import { api } from "./api";
 import { addSong, songTrackId } from "./catalog";
-import { confirmDialog } from "./dialog";
 import { createPlaylist, libraryStore, saveItem } from "./library";
 import { notify } from "./notify";
 import { createStore } from "./observable";
@@ -135,32 +134,6 @@ export function answerLinkAsk(link: boolean | null) {
   patch({ ask: false });
 }
 
-const EXPLAINED = "yfitops.import-explained";
-
-/** No primeiro pedido: explica quem baixa e por que precisa de Wi-Fi. */
-async function explainOnce(): Promise<boolean> {
-  try {
-    if (localStorage.getItem(EXPLAINED)) return true;
-  } catch {
-    return true;
-  }
-  const ok = await confirmDialog({
-    title: "Como a música chega",
-    message:
-      "Quem baixa é um celular Android com o app do yfitops aberto (ou tocando música) e conectado ao Wi-Fi. Pode ser o seu ou o de outra pessoa que usa o app.\n\n" +
-      "Por isso, para o seu celular ajudar, ele precisa estar no Wi-Fi: assim ninguém gasta dados móveis baixando para os outros.\n\n" +
-      "As músicas entram só na sua biblioteca, conforme ficam prontas. Pode fechar o app: o pedido fica guardado.",
-    confirm: "entendi, pedir",
-  });
-  if (ok)
-    try {
-      localStorage.setItem(EXPLAINED, "1");
-    } catch {
-      /* sem armazenamento: explica de novo da próxima vez */
-    }
-  return ok;
-}
-
 /** Manda o link do campo para a fila. */
 export async function requestLink() {
   const { link, tags, sending } = importsStore.get();
@@ -186,12 +159,11 @@ export async function requestLink() {
     if (answer === null) return;
     playlist = answer;
   }
-  if (!(await explainOnce())) return;
   patch({ sending: true, error: "" });
   try {
     await api.json("/imports", { method: "POST", json: { url, opts: { tags, playlist } satisfies ImportOpts } });
     patch({ link: "", tags: [] });
-    toast("Pedido na fila. As músicas entram na sua biblioteca conforme ficam prontas.");
+    toast("Pedido na fila.");
     await refreshImports();
   } catch (e) {
     patch({ error: (e as Error).message });
@@ -215,21 +187,25 @@ export async function syncPlaylist(playlistId: string) {
 // ---------------- Acompanhar e receber ----------------
 
 /** O pedido terminou (nada mais na fila nem baixando)? */
+/** Quantas foram ignoradas por passar de 13 minutos. */
+const tooLong = (r: ImportRequestInfo) => r.tracks.filter((t) => t.status === "skipped" && t.error === TOO_LONG).length;
+
 export const finished = (r: ImportRequestInfo) =>
   r.status === "failed" || (r.status === "listed" && !r.tracks.some((t) => t.status === "queued" || t.status === "working"));
 
 /** Situação de um pedido em uma linha ("4 de 12 prontas · 1 baixando agora"). */
 export function requestProgress(r: ImportRequestInfo): string {
-  if (r.status === "queued") return "esperando um celular ler o link";
-  if (r.status === "listing") return "um celular está lendo o link…";
+  if (r.status === "queued") return "na fila, esperando para ser baixado";
+  if (r.status === "listing") return "lendo o link…";
   if (r.status === "failed") return r.error ?? "o link não pôde ser lido";
   const count = (s: string) => r.tracks.filter((t) => t.status === s).length;
-  const working = count("working");
+  const now = r.tracks.find((t) => t.status === "working");
   return [
     `${count("done")} de ${r.tracks.length} prontas`,
-    working && `${working} baixando agora`,
+    now ? `baixando “${now.meta.title}”` : count("queued") && "na fila, esperando para ser baixado",
     count("failed") && `${count("failed")} não deram`,
-    count("skipped") && `${count("skipped")} ignoradas`,
+    tooLong(r) && `${tooLong(r)} com mais de 13 minutos (não entram)`,
+    count("skipped") - tooLong(r) && `${count("skipped") - tooLong(r)} ignoradas`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -280,14 +256,16 @@ async function deliver(r: ImportRequestInfo): Promise<boolean> {
     playlistId = await linkPlaylist(r.source, r.name || `Playlist do ${providerName(r.provider)}`, done, r.url);
   }
   const failed = r.tracks.filter((t) => t.status === "failed").length;
-  if (fresh.length || r.status === "failed") {
+  const long = tooLong(r);
+  if (fresh.length || long || r.status === "failed") {
     const where = playlistId ? ` em ${libraryStore.get().playlists[playlistId]?.name}` : "";
     void notify(
       failed || r.status === "failed" ? "Importação terminou com falhas" : "Importação concluída",
-      r.status === "failed" ? (r.error ?? "O link não pôde ser lido") : [`${done.length} música(s)${where}`, failed && `${failed} não puderam ser baixadas`].filter(Boolean).join(" · "),
+      r.status === "failed" ? (r.error ?? "O link não pôde ser lido") : [`${done.length} música(s)${where}`, failed && `${failed} não puderam ser baixadas`, long && `${long} com mais de 13 minutos ficaram de fora`].filter(Boolean).join(" · "),
     );
   }
-  if (failed || r.status === "failed") return false;
+  // Com falha ou com música longa demais: o card fica, para a pessoa ver o motivo (e dispensar).
+  if (failed || long || r.status === "failed") return false;
   await api.json(`/imports/${r.id}`, { method: "DELETE" }).catch(() => {});
   return true;
 }

@@ -79,15 +79,11 @@ try {
 
   step("computador pede o link");
   await desk.goto(URL + "#/enviar");
-  await desk.getByText("conectado ao Wi-Fi").waitFor();
+  await desk.getByPlaceholder("cole um link").waitFor();
   await desk.screenshot({ path: join(OUT, "q01-enviar.png") });
-  await desk.getByPlaceholder("ou cole um link").fill(LINK);
+  await desk.getByPlaceholder("cole um link").fill(LINK);
   await desk.getByRole("button", { name: "pedir", exact: true }).click();
   await desk.getByRole("button", { name: "pedir e criar a playlist" }).click();
-  // Primeiro pedido: explica quem baixa e o Wi-Fi.
-  await desk.getByText("precisa estar no Wi-Fi").waitFor();
-  await desk.screenshot({ path: join(OUT, "q02-explica-wifi.png") });
-  await desk.getByRole("button", { name: "entendi, pedir" }).click();
   await desk.locator(".request").waitFor();
   console.log("   ", await desk.locator(".request .track-sub").first().innerText());
   await desk.screenshot({ path: join(OUT, "q03-pedido.png") });

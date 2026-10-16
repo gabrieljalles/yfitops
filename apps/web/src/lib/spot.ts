@@ -1,4 +1,4 @@
-import type { ResolvedTrack, SongQuery, SpotFailKind, SpotJob } from "@yfitops/core";
+import { MAX_SONG_SECONDS, type ResolvedTrack, type SongQuery, type SpotFailKind, type SpotJob } from "@yfitops/core";
 import { api, ApiError } from "./api";
 import { artistFromChannel, splitArtistTitle } from "./artist";
 import { findInCatalog } from "./catalog";
@@ -174,6 +174,8 @@ async function work(job: SpotJob) {
     patch({ doing: `baixando "${label}"` });
     const dl = await downloadAudio(t.videoId);
     check();
+    // Mais de 13 minutos: baixou, mas não vai para o servidor.
+    if ((dl.duration || t.duration) > MAX_SONG_SECONDS) return await report(`/spot/track/${job.id}`, { device, tooLong: true });
     // Do Spotify/Deezer ficam o título e o artista de lá (mais limpos). Do YouTube:
     // "Artista - Título" no nome do vídeo; senão o canal, se for oficial ("- Topic", VEVO).
     if (!t.query || !t.artist) {

@@ -13,6 +13,8 @@ import {
   sha256,
   toB64,
   IMPORT_HOSTS,
+  MAX_SONG_SECONDS,
+  TOO_LONG,
   type ImportOpts,
   type ImportRequestInfo,
   type ImportTrackStatus,
@@ -654,6 +656,7 @@ app.post("/songs", async (c) => {
   const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number }>();
   const q = songQuery(body);
   if (!q.title) fail(400, "Música sem título");
+  if (q.duration > MAX_SONG_SECONDS) fail(413, "Músicas com mais de 13 minutos não entram no yfitops");
   const size = Number(body.size) || 0;
   const coverSize = Number(body.coverSize) || 0;
   if (size <= 0 || size > MAX_SONG) fail(413, "Arquivo de música grande demais");
@@ -1455,11 +1458,19 @@ app.post("/spot/list/:id", async (c) => {
 /** O celular terminou (ou não conseguiu) uma música. */
 app.post("/spot/track/:id", async (c) => {
   const id = checkId(c.req.param("id"));
-  const body = await c.req.json<{ device: string; songId?: string; error?: string; kind?: SpotFailKind }>();
+  const body = await c.req.json<{ device: string; songId?: string; error?: string; kind?: SpotFailKind; tooLong?: boolean }>();
   const device = checkDevice(body.device);
   const db = c.env.DB;
   const row = await db.prepare("SELECT 1 FROM import_tracks WHERE id = ? AND status = 'working' AND device = ?").bind(id, device).first();
   if (!row) fail(409, "Essa música não está mais com este aparelho");
+  // Baixou, mas passa de 13 minutos: não foi enviada e não volta para a fila.
+  if (body.tooLong) {
+    await db.batch([
+      db.prepare("UPDATE import_tracks SET status = 'skipped', error = ?, device = NULL WHERE id = ?").bind(TOO_LONG, id),
+      db.prepare("UPDATE import_devices SET last_done_at = ? WHERE id = ?").bind(Date.now(), device),
+    ]);
+    return c.json({ ok: true });
+  }
   if (body.error || !body.songId) {
     await failure(c.env, "import_tracks", id, device, failKind(body.kind), text(body.error) || "Não consegui baixar");
     return c.json({ ok: true });

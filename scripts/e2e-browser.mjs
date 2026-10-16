@@ -11,8 +11,13 @@ const URL = process.env.APP_URL ?? "http://127.0.0.1:8787/";
 // globalThis.URL: a constante URL acima (endereço do app) esconde o construtor.
 const COVER = fileURLToPath(new globalThis.URL("../apps/web/public/icon-512.png", import.meta.url));
 const CHROME = process.env.CHROME_PATH ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
+// Músicas só chegam por link: a pedida aqui é baixada por um "celular" de teste
+// (Chrome sem CORS + modo de teste do app). O áudio é o WAV de teste abaixo; o
+// nome e o artista vêm do YouTube.
+const LINK = process.env.SONG_LINK ?? "https://youtu.be/dQw4w9WgXcQ";
+const SONG = process.env.SONG_TITLE ?? "Never Gonna Give You Up";
 
-// WAV 24-bit estéreo 44.1 kHz, 6 s: acorde + um pouco de ruído.
+// WAV 24-bit estéreo 44.1 kHz, 6 s: acorde + um pouco de ruído (o "download" de teste).
 function wav24(seconds = 6, rate = 44100) {
   const n = seconds * rate, ch = 2, bps = 3;
   const data = Buffer.alloc(n * ch * bps);
@@ -34,6 +39,7 @@ function wav24(seconds = 6, rate = 44100) {
 }
 
 const browser = await chromium.launch({ executablePath: CHROME, args: ["--autoplay-policy=no-user-gesture-required"] });
+const helperBrowser = await chromium.launch({ executablePath: CHROME, args: ["--disable-web-security", "--disable-site-isolation-trials"] });
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const page = await ctx.newPage();
 const logs = [];
@@ -88,19 +94,36 @@ try {
   await page.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
   await shot("02-vazio");
 
-  step("enviar WAV 24-bit");
+  step("pedir uma música por link (um celular de teste baixa)");
+  const helperCtx = await helperBrowser.newContext({ viewport: { width: 412, height: 860 }, isMobile: true });
+  await helperCtx.addInitScript((a) => {
+    localStorage.setItem("yfitops.spot-debug", "1");
+    localStorage.setItem("yfitops.spot-test-audio", a);
+  }, `data:audio/wav;base64,${wav24().toString("base64")}`);
+  const helper = await helperCtx.newPage();
+  helper.on("pageerror", (e) => logs.push(`[pageerror celular] ${e.message}`));
+  await helper.goto(URL);
+  await helper.getByRole("button", { name: "Criar conta" }).click();
+  await helper.getByLabel("E-mail").fill(`ajuda-${Date.now()}@teste.com`);
+  await helper.getByLabel("Senha", { exact: true }).fill("senha-de-quem-ajuda");
+  await helper.getByLabel("Repita a senha").fill("senha-de-quem-ajuda");
+  await enterSignupCode(helper);
+  await helper.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
+  await helper.goto(URL + "#/ajustes");
   await page.goto(URL + "#/enviar");
-  await page.locator('input[type="file"][multiple]').setInputFiles({ name: "01 - Teste Acorde.wav", mimeType: "audio/wav", buffer: wav24() });
-  await page.waitForTimeout(1500);
-  await shot("03-enviando");
-  await page.locator(".job .track-sub").filter({ hasText: /pronto|erro/ }).waitFor({ timeout: 240000 });
-  const status = await page.locator(".job .track-sub").innerText();
-  console.log("   status:", status);
+  await page.getByPlaceholder("cole um link").fill(LINK);
+  await page.getByRole("button", { name: "pedir", exact: true }).click();
+  await page.locator(".request").waitFor();
+  console.log("   pedido:", await page.locator(".request .track-sub").first().innerText());
+  await shot("03-pedido");
+  // O card some quando a música chegou na biblioteca (a tela confere a cada 20 s).
+  await page.locator(".request").waitFor({ state: "detached", timeout: 240000 });
+  console.log("   música pedida chegou ✓");
   await shot("04-enviado");
 
   step("biblioteca e tocar");
   await page.goto(URL + "#/biblioteca");
-  await page.getByText("Teste Acorde").first().waitFor();
+  await page.getByText(SONG).first().waitFor();
   await page.locator(".track-main").first().click();
   await page.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
   console.log("   tocando ✓");
@@ -122,7 +145,7 @@ try {
 
   step("buscar por tag e por texto");
   await page.goto(URL + "#/buscar");
-  await page.getByPlaceholder(/Música, artista/).fill("acord");
+  await page.getByPlaceholder(/Música, artista/).fill(SONG.slice(0, 10).toLowerCase());
   await page.locator(".tracks li").first().waitFor();
   await page.getByPlaceholder(/Música, artista/).fill("");
   await page.locator(".chip", { hasText: "#acustico" }).click();
@@ -186,7 +209,7 @@ try {
   await p2.locator("form").getByRole("button", { name: "Entrar" }).click();
   await p2.getByText("Estudo").first().waitFor({ timeout: 30000 });
   await p2.goto(URL + "#/biblioteca");
-  await p2.getByText("Teste Acorde").first().waitFor();
+  await p2.getByText(SONG).first().waitFor();
   console.log("   sync entre aparelhos ✓");
 
   step("compartilhar grupo com outra pessoa");
@@ -217,14 +240,14 @@ try {
 
   step("catálogo: o amigo acha a música na busca e adiciona sem enviar nada");
   await p3.goto(URL + "#/buscar");
-  await p3.getByPlaceholder(/Música, artista/).fill("teste acorde");
-  const fromCatalog = p3.locator(".catalog-results li", { hasText: "Teste Acorde" });
+  await p3.getByPlaceholder(/Música, artista/).fill(SONG.toLowerCase());
+  const fromCatalog = p3.locator(".catalog-results li", { hasText: SONG });
   await fromCatalog.waitFor({ timeout: 15000 });
   await p3.screenshot({ path: join(OUT, "14-busca-catalogo.png") });
   await fromCatalog.getByRole("button", { name: "Adicionar à biblioteca" }).click();
   await p3.getByText("Adicionada à biblioteca").waitFor();
   await p3.goto(URL + "#/biblioteca");
-  await p3.getByText("Teste Acorde").first().waitFor();
+  await p3.getByText(SONG).first().waitFor();
   console.log("   música do catálogo na biblioteca do amigo ✓");
 } catch (e) {
   console.log("FALHOU:", e.message.split("\n")[0]);
@@ -233,4 +256,5 @@ try {
 } finally {
   console.log(logs.length ? "Console:\n" + logs.join("\n") : "Console: sem erros");
   await browser.close();
+  await helperBrowser.close();
 }

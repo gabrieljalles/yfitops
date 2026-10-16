@@ -33,6 +33,11 @@ export interface ImportOpts {
 
 export type ImportTrackStatus = "queued" | "working" | "done" | "failed" | "skipped";
 
+/** Músicas com mais que isto (13 minutos) não entram no yfitops: o celular baixa, mas não envia. */
+export const MAX_SONG_SECONDS = 13 * 60;
+/** Motivo gravado na música ignorada por ser longa demais. */
+export const TOO_LONG = "tem mais de 13 minutos: não entra no yfitops";
+
 export interface ImportTrackInfo {
   id: string;
   pos: number;

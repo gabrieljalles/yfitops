@@ -1,8 +1,7 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { ImportRequestInfo, ImportTrackStatus } from "@yfitops/core";
 import { Icon } from "../components/Icon";
 import { confirmDialog } from "../lib/dialog";
-import { clearFinished, enqueue, jobsStore } from "../lib/importer";
 import { StorageBar } from "../components/StorageBar";
 import { TagInput } from "../components/TagInput";
 import {
@@ -22,12 +21,7 @@ import {
   setImportTags,
   skipTracks,
 } from "../lib/imports";
-import { isAndroidBrowser } from "../lib/native";
-import { askNotifyPermission } from "../lib/notify";
 import { useStore } from "../lib/observable";
-import { spotStore } from "../lib/spot";
-import { formatBytes } from "../lib/tracks";
-import { openTrack } from "../lib/ui";
 
 /** O embed do Spotify só entrega as 50 primeiras músicas de uma playlist. */
 function SpotifyLimit() {
@@ -40,16 +34,9 @@ function SpotifyLimit() {
 }
 
 export function UploadPage() {
-  const jobs = useStore(jobsStore);
-  const input = useRef<HTMLInputElement>(null);
-  const [over, setOver] = useState(false);
   // Vem de um store (e não de useState) para sobreviver à troca de tela.
   const { link, sending, error: linkError, ask, pick, tags, requests } = useStore(importsStore);
   const asking = !!pick || ask;
-  const cleared = jobs.some((j) =>
-    ["pronto", "já existe", "erro"].includes(j.status),
-  );
-  const bigBatch = jobs.filter((j) => j.status === "na fila").length > 20;
 
   /** Serviço do link colado: muda a cor da borda, o ícone e a cor do botão. */
   const brand = isYouTubeLink(link)
@@ -63,38 +50,6 @@ export function UploadPage() {
   return (
     <div className="page">
       <StorageBar onlyWhenFull />
-      <div
-        className={`dropzone${over ? " over" : ""}`}
-        onClick={() => input.current?.click()}
-        onDragOver={(e) => (e.preventDefault(), setOver(true))}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setOver(false);
-          void askNotifyPermission();
-          enqueue([...e.dataTransfer.files]);
-        }}
-      >
-        <Icon name="upload" size={32} />
-        <strong>Solte suas músicas aqui</strong>
-        <span className="muted small">
-          ou toque para escolher · áudio em qualquer formato, e também vídeos (o
-          app tira só o áudio)
-        </span>
-        <input
-          ref={input}
-          type="file"
-          accept="audio/*,video/*,.flac,.wav,.w64,.aif,.aiff,.caf,.m4a,.opus,.ogg,.wv,.ape,.tta,.wma,.ac3,.dts,.mka,.dsf,.dff,.mkv"
-          multiple
-          hidden
-          onChange={(e) => {
-            void askNotifyPermission();
-            enqueue([...(e.target.files ?? [])]);
-            e.target.value = "";
-          }}
-        />
-      </div>
-
       <div className={`link-import${brand ? ` linked ${brand}` : ""}`}>
         <label className="link-field">
           <span className="link-brand" aria-hidden="true">
@@ -103,7 +58,7 @@ export function UploadPage() {
           <input
             type="url"
             value={link}
-            placeholder="ou cole um link do YouTube, Spotify ou Deezer"
+            placeholder="Cole um link do YouTube, Spotify ou Deezer"
             disabled={sending || asking}
             onChange={(e) => setImportLink(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void requestLink()}
@@ -114,8 +69,6 @@ export function UploadPage() {
         </button>
         {linkError && <span className="small err">{linkError}</span>}
       </div>
-
-      <WifiHint />
 
       {/* Opcional: só aparece com um link válido (ou se já houver tags escolhidas). */}
       {(brand || tags.length > 0) && (
@@ -176,7 +129,7 @@ export function UploadPage() {
       {requests.length > 0 && (
         <>
           <div className="section-head">
-            <h2>Pedidos por link</h2>
+            <h2>Pedidos</h2>
           </div>
           <ul className="requests">
             {requests.map((r) => (
@@ -185,125 +138,13 @@ export function UploadPage() {
           </ul>
         </>
       )}
-
-      <details className="explain">
-        <summary>
-          Quais formatos posso enviar e o que acontece com cada um
-        </summary>
-        <ul>
-          <li>
-            Tudo vira <strong>MP3 192 kbps</strong>: toca em qualquer aparelho e
-            ocupa pouco (cerca de 6 MB por música de 4 minutos).
-          </li>
-          <li>
-            <strong>MP3 de até 192 kbps</strong> fica como está (reconverter só
-            pioraria). MP3 maior, AAC, Opus, OGG, WMA e outros são convertidos.
-          </li>
-          <li>
-            <strong>Formatos sem perda</strong> (FLAC, WAV, AIFF, ALAC, DSD…)
-            também viram MP3. Ficam bem menores, mas deixam de ser sem perda.
-          </li>
-          <li>
-            <strong>Vídeos</strong> (MP4, MKV, WEBM, MOV…): o app usa só o áudio.
-          </li>
-          <li>
-            <strong>A nuvem é compartilhada:</strong> se alguém já trouxe a mesma
-            música (mesmo artista, título e duração), nada é enviado: ela só
-            entra na sua biblioteca. As músicas ficam visíveis na busca de quem
-            usa o app, mas ninguém vê a sua biblioteca, playlists ou favoritas.
-          </li>
-        </ul>
-      </details>
-
-      {bigBatch && (
-        <p className="muted small">
-          Lotes grandes demoram no navegador. No app de computador a conversão é
-          bem mais rápida.
-        </p>
-      )}
-
-      {jobs.length > 0 && (
-        <>
-          <div className="section-head">
-            <h2>Envios</h2>
-            {cleared && (
-              <button className="link" onClick={clearFinished}>
-                limpar concluídos
-              </button>
-            )}
-          </div>
-          <ul className="jobs">
-            {jobs.map((j) => (
-              <li
-                key={j.id}
-                className={`job ${j.status === "erro" ? "err" : ""}`}
-              >
-                <div className="job-text">
-                  <span className="track-title">{j.name}</span>
-                  <span className="track-sub">
-                    {j.status}
-                    {j.detail && ` · ${j.detail}`} · {formatBytes(j.size)}
-                  </span>
-                  {["convertendo", "enviando"].includes(j.status) && (
-                    <div className="progress">
-                      <div
-                        style={{ width: `${Math.round(j.progress * 100)}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-                {j.result && (
-                  <button
-                    className="icon-btn"
-                    title="Abrir"
-                    onClick={() => openTrack(j.result!)}
-                  >
-                    <Icon name="more" />
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
     </div>
-  );
-}
-
-/**
- * Quem baixa os links e por que precisa de Wi-Fi (sempre à vista na tela de
- * envio: quem pede pela primeira vez precisa saber).
- */
-function WifiHint() {
-  const { helpers, loaded } = useStore(importsStore);
-  const spot = useStore(spotStore);
-  return (
-    <p className="muted small wifi-hint">
-      Links são baixados por um celular Android com o app do yfitops aberto (ou tocando música) e{" "}
-      <strong>conectado ao Wi-Fi</strong>, para ninguém gastar dados móveis baixando para os outros.{" "}
-      {loaded && (helpers ? `${helpers} celular(es) ajudando agora.` : "Nenhum celular ajudando agora: o pedido espera na fila.")}
-      {spot.capable && spot.reason === "só ajuda no Wi-Fi" && (
-        <>
-          {" "}
-          <strong>Este celular está fora do Wi-Fi:</strong> conecte-se para ele baixar.
-        </>
-      )}
-      {isAndroidBrowser() && (
-        <>
-          {" "}
-          <a href="/yfitops.apk" download>
-            Instale o app Android
-          </a>{" "}
-          para o seu celular ajudar.
-        </>
-      )}
-    </p>
   );
 }
 
 const TRACK_STATUS: Record<ImportTrackStatus, string> = {
   queued: "na fila",
-  working: "baixando em um celular…",
+  working: "baixando agora",
   done: "pronta",
   failed: "não deu",
   skipped: "ignorada",
@@ -347,13 +188,15 @@ function RequestCard({ r }: { r: ImportRequestInfo }) {
       {r.truncated && r.provider === "spotify" && <SpotifyLimit />}
       {open && (
         <ul className="request-tracks">
-          {r.tracks.map((t) => (
+          {r.tracks.map((t, i) => (
             <li key={t.id} className={t.status}>
               <span className="track-text">
-                <span className="track-title">{t.meta.title}</span>
+                <span className="track-title">
+                  {i + 1}. {t.meta.title}
+                </span>
                 <span className={`track-sub${t.status === "failed" ? " err" : ""}`}>
                   {TRACK_STATUS[t.status]}
-                  {t.error && t.status === "failed" && ` · ${t.error}`}
+                  {t.error && (t.status === "failed" || t.status === "skipped") && ` · ${t.error}`}
                 </span>
               </span>
               {t.status === "queued" && (

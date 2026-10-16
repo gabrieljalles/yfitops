@@ -128,9 +128,8 @@ try {
   step("o computador pede um link; o app no emulador baixa");
   const desk = await (await pc.newContext({ viewport: { width: 1200, height: 800 } })).newPage();
   await signup(desk, `pede-${run}@teste.com`, URL);
-  await desk.evaluate(() => localStorage.setItem("yfitops.import-explained", "1"));
   await desk.goto(URL + "#/enviar");
-  await desk.getByPlaceholder("ou cole um link").fill(LINK);
+  await desk.getByPlaceholder("cole um link").fill(LINK);
   await desk.getByRole("button", { name: "pedir", exact: true }).click();
   // Álbum/playlist pergunta se cria a playlist; vídeo único vai direto.
   const asPlaylist = desk.getByRole("button", { name: "pedir e criar a playlist" });
