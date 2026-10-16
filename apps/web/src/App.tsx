@@ -4,6 +4,7 @@ import { Dialog } from "./components/Dialog";
 import { Icon, type IconName } from "./components/Icon";
 import { Notice } from "./components/Notice";
 import { SyncButton } from "./components/SyncButton";
+import { InstallAppBanner, InstallAppPrompt } from "./components/InstallApp";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
 import { daysLeft, dueText, formatDate, WARN_DAYS } from "./lib/billing";
@@ -190,6 +191,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
           <SyncButton className="compact" />
         </header>
         <PaymentBanner />
+        <InstallAppBanner />
         {children}
       </main>
       <PlayerBar />
@@ -197,6 +199,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
       <TrackSheet />
       <Toast />
       <Dialog />
+      <InstallAppPrompt />
     </div>
   );
 }

@@ -33,33 +33,31 @@ interface AdminUser {
 
 interface Overview {
   usage: { bytes: number; quota: number; count: number };
-  /** Texto de como pagar (vai na mensagem de cobrança). */
-  paymentInfo: string;
   users: AdminUser[];
 }
 
 const MONTH_OPTIONS = [1, 2, 3, 6, 12];
 
-/** Link do WhatsApp com a mensagem de cobrança pronta. */
-function whatsappLink(u: AdminUser, paymentInfo: string): string | null {
+/** Link do WhatsApp com a mensagem de cobrança pronta (o Pix você manda na conversa). */
+function whatsappLink(u: AdminUser): string | null {
   if (!u.phone) return null;
   const when = formatDate(u.paidUntil);
   const text =
     u.paidUntil < Date.now()
-      ? `Oi! Seu acesso ao Yfitops venceu em ${when}. Para voltar a ouvir: ${paymentInfo}`
-      : `Oi! Seu acesso ao Yfitops vence em ${when}. Para renovar: ${paymentInfo}`;
+      ? `Oi! Seu acesso ao Yfitops venceu em ${when}. Quer renovar? Te mando o Pix por aqui.`
+      : `Oi! Seu acesso ao Yfitops vence em ${when}. Quer renovar? Te mando o Pix por aqui.`;
   return `https://wa.me/${u.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
 }
 
 /** Cobrança de uma pessoa: até quando está pago, liberar meses, bloquear, cobrar e o acesso ao catálogo. */
-function Billing({ u, paymentInfo, onChange }: { u: AdminUser; paymentInfo: string; onChange: () => Promise<void> }) {
+function Billing({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> }) {
   const [months, setMonths] = useState(1);
   const [catalog, setCatalog] = useState(u.catalog);
   const [busy, setBusy] = useState(false);
   const now = Date.now();
   const expired = u.paidUntil < now;
   const tone = expired ? "error" : daysLeft(u.paidUntil, now) <= WARN_DAYS ? "warn" : "ok";
-  const wa = whatsappLink(u, paymentInfo);
+  const wa = whatsappLink(u);
 
   const run = (fn: () => Promise<unknown>, ok: string) =>
     attempt(async () => {
@@ -266,7 +264,7 @@ export default function AdminPage() {
                   {u.phone ? `${formatPhone(u.phone)} · ` : ""}desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · trouxe{" "}
                   {musicas(u.songs)} ({formatBytes(u.bytes)})
                 </small>
-                {!u.admin && <Billing u={u} paymentInfo={data.paymentInfo} onChange={load} />}
+                {!u.admin && <Billing u={u} onChange={load} />}
               </span>
               <span className="row">
                 <button className="link" onClick={() => void resetLink(u)}>

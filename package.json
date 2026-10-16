@@ -12,7 +12,7 @@
     "build": "npm run build -w apps/web",
     "test": "npm test -w packages/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "deploy": "npm run build && npm run deploy -w server",
+    "deploy": "npm run build && node scripts/check-apk.mjs && npm run deploy -w server",
     "e2e": "node scripts/e2e-browser.mjs"
   },
   "devDependencies": {

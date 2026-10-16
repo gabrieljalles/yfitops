@@ -41,8 +41,8 @@ WORKER_NAME = "yfitops"
 QUOTA_GB = "9.5"
 # Dias grátis a partir da aprovação da conta; depois disso, só com meses liberados no Painel.
 TRIAL_DAYS = "7"
-# Como pagar: aparece para quem está vencendo ou vencido e vai na mensagem de cobrança do WhatsApp.
-PAYMENT_INFO = "R$ 9 por mês via Pix. Chave: COLE_AQUI_SUA_CHAVE_PIX. Depois de pagar, mande o comprovante no WhatsApp."
+# Como pagar: aparece para quem está vencendo ou vencido.
+PAYMENT_INFO = "Para renovar, fale com quem te convidou para o Yfitops."
 
 # Faxina do catálogo: junta músicas duplicadas e limpa envios abandonados.
 # Todo dia às 6h UTC (3h em Brasília).
