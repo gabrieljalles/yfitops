@@ -51,6 +51,11 @@ export interface Track {
   favoriteAt?: number;
   /** Música do catálogo compartilhado que esta faixa usa. */
   song?: string;
+  /**
+   * Só neste aparelho: passou de 13 minutos, então não foi para o servidor. O
+   * arquivo fica nos downloads do aparelho e a faixa não sincroniza com os outros.
+   */
+  local?: true;
   addedAt: number;
 }
 

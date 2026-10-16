@@ -14,7 +14,7 @@ import {
   toB64,
   IMPORT_HOSTS,
   MAX_SONG_SECONDS,
-  TOO_LONG,
+  TOO_LONG_LOCAL,
   type ImportOpts,
   type ImportRequestInfo,
   type ImportTrackStatus,
@@ -955,16 +955,33 @@ app.get("/admin/songs", async (c) => {
   return c.json({ songs: results.slice(0, PAGE), more: results.length > PAGE });
 });
 
-/** Apaga a música do sistema: some da nuvem e da biblioteca de todos. */
-app.delete("/admin/songs/:id", async (c) => {
-  const id = checkId(c.req.param("id"));
-  const row = await c.env.DB.prepare("SELECT status FROM songs WHERE id = ?").bind(id).first<{ status: string }>();
-  if (!row || row.status === "removed") return c.json({ ok: true });
-  await c.env.BUCKET.delete([songKey(id, "audio"), songKey(id, "cover")]);
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE songs SET status = 'removed' WHERE id = ?").bind(id),
-    c.env.DB.prepare("DELETE FROM song_sources WHERE song_id = ?").bind(id),
+/** Apaga músicas do sistema: somem da nuvem e da biblioteca de todos. */
+async function removeSongs(env: Env, ids: string[]) {
+  if (!ids.length) return;
+  const marks = ids.map(() => "?").join(",");
+  const { results } = await env.DB.prepare(`SELECT id FROM songs WHERE id IN (${marks}) AND status != 'removed'`)
+    .bind(...ids)
+    .all<{ id: string }>();
+  const live = results.map((r) => r.id);
+  if (!live.length) return;
+  await env.BUCKET.delete(live.flatMap((id) => [songKey(id, "audio"), songKey(id, "cover")]));
+  const in_ = live.map(() => "?").join(",");
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE songs SET status = 'removed' WHERE id IN (${in_})`).bind(...live),
+    env.DB.prepare(`DELETE FROM song_sources WHERE song_id IN (${in_})`).bind(...live),
   ]);
+}
+
+app.delete("/admin/songs/:id", async (c) => {
+  await removeSongs(c.env, [checkId(c.req.param("id"))]);
+  return c.json({ ok: true });
+});
+
+/** Várias de uma vez (seleção no painel): até 100 por pedido. */
+app.post("/admin/songs/delete", async (c) => {
+  const { ids } = await c.req.json<{ ids: unknown }>();
+  if (!Array.isArray(ids) || !ids.length || ids.length > 100) fail(400, "Escolha de 1 a 100 músicas");
+  await removeSongs(c.env, [...new Set(ids.map((id) => checkId(String(id))))]);
   return c.json({ ok: true });
 });
 
@@ -1350,6 +1367,20 @@ app.post("/spot/claim", async (c) => {
 
   if (!(await db.prepare("SELECT 1 FROM import_tracks WHERE status = 'queued' LIMIT 1").first())) return c.json({ job: null, wait: 60 });
 
+  // Mais de 13 minutos não vai para o servidor: só o celular de quem pediu baixa (e fica com ela).
+  // Ele pega na hora, sem esperar a vez: nenhum outro celular pode baixar essa.
+  const mine = await db
+    .prepare(
+      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+       WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
+                   WHERE t.status = 'queued' AND r.user_id = ? AND ${LONG_TRACK}
+                   ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
+       RETURNING id, request_id AS requestId, meta`,
+    )
+    .bind(device, now, c.get("userId"))
+    .first<{ id: string; requestId: string; meta: string }>();
+  if (mine) return c.json({ job: { type: "track", id: mine.id, requestId: mine.requestId, meta: JSON.parse(mine.meta), mine: true } satisfies SpotJob });
+
   // Revezamento: a vez é do celular livre que espera há mais tempo desde o último download.
   const turn = await db
     .prepare(
@@ -1367,14 +1398,20 @@ app.post("/spot/claim", async (c) => {
     .prepare(
       `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
-                   WHERE t.status = 'queued' ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
+                   WHERE t.status = 'queued' AND NOT ${LONG_TRACK} ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
        RETURNING id, request_id AS requestId, meta`,
     )
     .bind(device, now)
     .first<{ id: string; requestId: string; meta: string }>();
   if (!track) return c.json({ job: null, wait: 15 });
-  return c.json({ job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta) } satisfies SpotJob });
+  const owner = await db.prepare("SELECT user_id AS userId FROM import_requests WHERE id = ?").bind(track.requestId).first<{ userId: string }>();
+  return c.json({
+    job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta), mine: owner?.userId === c.get("userId") } satisfies SpotJob,
+  });
 });
+
+/** Faixa que se sabe ter mais de 13 minutos (a duração vem do link ou de quem já tentou baixar). */
+const LONG_TRACK = `COALESCE(json_extract(t.meta, '$.duration'), 0) > ${MAX_SONG_SECONDS}`;
 
 /** O celular parou de ajudar (pausou a música, saiu do app ou do Wi-Fi): a vez passa na hora. */
 app.post("/spot/leave", async (c) => {
@@ -1458,15 +1495,25 @@ app.post("/spot/list/:id", async (c) => {
 /** O celular terminou (ou não conseguiu) uma música. */
 app.post("/spot/track/:id", async (c) => {
   const id = checkId(c.req.param("id"));
-  const body = await c.req.json<{ device: string; songId?: string; error?: string; kind?: SpotFailKind; tooLong?: boolean }>();
+  const body = await c.req.json<{ device: string; songId?: string; error?: string; kind?: SpotFailKind; tooLong?: boolean; local?: boolean; duration?: number }>();
   const device = checkDevice(body.device);
   const db = c.env.DB;
   const row = await db.prepare("SELECT 1 FROM import_tracks WHERE id = ? AND status = 'working' AND device = ?").bind(id, device).first();
   if (!row) fail(409, "Essa música não está mais com este aparelho");
-  // Baixou, mas passa de 13 minutos: não foi enviada e não volta para a fila.
+  // Baixou, mas passa de 13 minutos: não vai para o servidor.
   if (body.tooLong) {
+    const owner = await db
+      .prepare("SELECT 1 FROM import_tracks t JOIN import_requests r ON r.id = t.request_id WHERE t.id = ? AND r.user_id = ?")
+      .bind(id, c.get("userId"))
+      .first();
     await db.batch([
-      db.prepare("UPDATE import_tracks SET status = 'skipped', error = ?, device = NULL WHERE id = ?").bind(TOO_LONG, id),
+      owner && body.local
+        ? // O celular de quem pediu ficou com ela.
+          db.prepare("UPDATE import_tracks SET status = 'skipped', error = ?, device = NULL WHERE id = ?").bind(TOO_LONG_LOCAL, id)
+        : // Outro celular descobriu a duração ao baixar: volta para a fila, agora só para o celular de quem pediu.
+          db
+            .prepare("UPDATE import_tracks SET status = 'queued', device = NULL, meta = json_set(meta, '$.duration', ?) WHERE id = ?")
+            .bind(Math.max(MAX_SONG_SECONDS + 1, Math.round(Number(body.duration) || 0)), id),
       db.prepare("UPDATE import_devices SET last_done_at = ? WHERE id = ?").bind(Date.now(), device),
     ]);
     return c.json({ ok: true });

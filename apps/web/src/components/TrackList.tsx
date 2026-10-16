@@ -6,6 +6,7 @@ import { formatTime } from "../lib/tracks";
 import { openTrack } from "../lib/ui";
 import { Cover } from "./Cover";
 import { Icon } from "./Icon";
+import { WithLocalBadge } from "./LocalBadge";
 
 export function TrackList({
   ids,
@@ -47,7 +48,9 @@ export function TrackList({
                   {selected.has(id) && <Icon name="check" size={14} />}
                 </span>
               )}
-              <Cover cover={t!.cover} seed={t!.title + t!.artist} size={44} />
+              <WithLocalBadge local={t!.local}>
+                <Cover cover={t!.cover} seed={t!.title + t!.artist} size={44} />
+              </WithLocalBadge>
               <span className="track-text">
                 <span className="track-title">{t!.title}</span>
                 <span className="track-sub">
@@ -56,7 +59,7 @@ export function TrackList({
                       <Icon name="heartFilled" size={12} />
                     </span>
                   )}
-                  {downloaded && (
+                  {downloaded && !t!.local && (
                     <span className="badge" title="Disponível offline">
                       <Icon name="download" size={12} />
                     </span>

@@ -16,6 +16,7 @@ import {
   type Track,
 } from "@yfitops/core";
 import { api, ApiError } from "./api";
+import { dropLocal, keepLocal } from "./blobs";
 import { db, kvGet, kvSet } from "./db";
 import { createStore } from "./observable";
 import { getKeys, getSession } from "./session";
@@ -116,10 +117,17 @@ function applyLocal(kind: ItemKind, id: string, value: unknown | null) {
   });
 }
 
+/** Faixa que só existe neste aparelho (mais de 13 minutos): fica fora do sync. */
+const isLocalTrack = (kind: ItemKind, value: unknown) => kind === "track" && !!(value as Track | undefined)?.local;
+
 export async function saveItem<K extends ItemKind>(kind: K, id: string, value: ItemValue[K]) {
   applyLocal(kind, id, value);
-  const enc = await sealJSON(getKeys().enc, id, value);
   const d = await db();
+  if (isLocalTrack(kind, value)) {
+    await d.put("items", { id, kind, value });
+    return;
+  }
+  const enc = await sealJSON(getKeys().enc, id, value);
   const tx = d.transaction(["items", "outbox"], "readwrite");
   await tx.objectStore("items").put({ id, kind, value });
   await tx.objectStore("outbox").put({ id, kind, enc, deleted: false });
@@ -129,8 +137,15 @@ export async function saveItem<K extends ItemKind>(kind: K, id: string, value: I
 }
 
 export async function deleteItem(kind: ItemKind, id: string) {
+  const before = kind === "track" ? libraryStore.get().tracks[id] : undefined;
   applyLocal(kind, id, null);
   const d = await db();
+  if (isLocalTrack(kind, before)) {
+    // Não há outra cópia: o arquivo sai junto com a faixa.
+    await d.delete("items", id);
+    for (const ref of [...Object.values(before!.variants), before!.cover]) if (ref) await dropLocal(ref);
+    return;
+  }
   const tx = d.transaction(["items", "outbox"], "readwrite");
   await tx.objectStore("items").delete(id);
   await tx.objectStore("outbox").put({ id, kind, enc: null, deleted: true });
@@ -230,6 +245,49 @@ export function getTrackFrom(lib: Library, id: string): Track | undefined {
   if (!id.startsWith("s~")) return lib.tracks[id];
   const [, shareId, trackId] = id.split("~");
   return lib.shared.find((g) => g.shareId === shareId)?.tracks[trackId];
+}
+
+// ---------------- Músicas só deste aparelho ----------------
+
+export interface LocalTrackInput {
+  audio: Uint8Array;
+  mime: string;
+  cover?: Uint8Array;
+  title: string;
+  artist: string;
+  album?: string;
+  duration: number;
+  /** Ex.: "youtube:<id>": pedir de novo não guarda duas vezes. */
+  source: string;
+}
+
+/**
+ * Põe na biblioteca deste aparelho uma música que não foi para o servidor (mais
+ * de 13 minutos). O arquivo fica nos downloads e a faixa não sincroniza.
+ */
+export async function addLocalTrack(t: LocalTrackInput): Promise<string> {
+  const lib = libraryStore.get();
+  const known = Object.entries(lib.tracks).find(([, x]) => x.local && x.source === t.source);
+  if (known) return known[0];
+  const id = randomId();
+  const audio = await keepLocal(id, "audio", t.audio, t.mime);
+  const cover = t.cover ? await keepLocal(id, "cover", t.cover, "image/webp") : undefined;
+  const track: Track = {
+    title: t.title,
+    artist: t.artist,
+    album: t.album ?? "",
+    genre: "",
+    tags: [],
+    duration: t.duration,
+    sourceInfo: "só neste aparelho",
+    variants: { orig: audio },
+    ...(cover && { cover }),
+    source: t.source,
+    local: true,
+    addedAt: Date.now(),
+  };
+  await saveItem("track", id, track);
+  return id;
 }
 
 // ---------------- Sync com o servidor ----------------
@@ -406,7 +464,8 @@ export async function sharePlaylist(playlistId: string, email: string) {
   const target = await api.json<{ userId: string; publicKey: string }>(`/users/lookup?email=${encodeURIComponent(email)}`);
   if (target.userId === getSession().userId) throw new Error("Esse é você 🙂");
   const tracks: Record<string, Track> = {};
-  for (const id of playlist.trackIds) if (lib.tracks[id]) tracks[id] = lib.tracks[id];
+  // As só deste aparelho (mais de 13 minutos) não têm como ir para outra pessoa.
+  for (const id of playlist.trackIds) if (lib.tracks[id] && !lib.tracks[id].local) tracks[id] = lib.tracks[id];
   const payload: SharePayload = { playlist: { ...playlist, trackIds: Object.keys(tracks) }, tracks };
   const sealed = await eciesSeal(target.publicKey, utf8.encode(JSON.stringify(payload)));
   await api.json(`/shares/${playlistId}.${target.userId}`, {

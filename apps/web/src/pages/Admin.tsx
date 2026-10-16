@@ -179,6 +179,9 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
   const [sort, setSort] = useState<"recent" | "size" | "title">("recent");
   const [songs, setSongs] = useState<AdminSong[]>([]);
   const [more, setMore] = useState(false);
+  /** Escolhendo várias para apagar de uma vez (null = fora do modo de seleção). */
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchPage = useCallback(
     async (offset: number) => {
@@ -196,21 +199,38 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
     return () => clearTimeout(t);
   }, [fetchPage]);
 
-  const remove = async (s: AdminSong) => {
+  /** Apaga do sistema (uma ou várias): pede confirmação uma vez só. */
+  const remove = async (list: AdminSong[]) => {
+    if (!list.length) return;
     const ok = await confirmDialog({
       title: "Apagar do sistema?",
-      message: `"${s.title}" sai da nuvem e da biblioteca de todo mundo. Não dá para desfazer.`,
-      confirm: "apagar",
+      message: `${list.length === 1 ? `"${list[0].title}" sai` : `${list.length} músicas saem`} da nuvem e da biblioteca de todo mundo. Não dá para desfazer.`,
+      confirm: list.length === 1 ? "apagar" : `apagar ${list.length}`,
       danger: true,
     });
     if (!ok) return;
+    setDeleting(true);
     await attempt(async () => {
-      await api.json(`/admin/songs/${s.id}`, { method: "DELETE" });
-      setSongs((cur) => cur.filter((x) => x.id !== s.id));
+      const ids = list.map((x) => x.id);
+      for (let i = 0; i < ids.length; i += 100) {
+        await api.json("/admin/songs/delete", { method: "POST", json: { ids: ids.slice(i, i + 100) } });
+      }
+      const gone = new Set(ids);
+      setSongs((cur) => cur.filter((x) => !gone.has(x.id)));
+      setSelected(null);
       await onChange();
       void refreshUsage();
-    }, "Música apagada do sistema");
+    }, list.length === 1 ? "Música apagada do sistema" : `${list.length} músicas apagadas do sistema`);
+    setDeleting(false);
   };
+  const toggle = (id: string) =>
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const allSelected = !!selected && songs.length > 0 && songs.every((x) => selected.has(x.id));
 
   return (
     <section>
@@ -231,11 +251,47 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
           ))}
         </div>
       </div>
+      {songs.length > 0 &&
+        (selected ? (
+          <div className="section-head select-bar">
+            <span className="small">
+              <strong>{selected.size}</strong> {selected.size === 1 ? "selecionada" : "selecionadas"}
+            </span>
+            <div className="row wrap">
+              <button className="chip ghost" disabled={deleting} onClick={() => setSelected(allSelected ? new Set() : new Set(songs.map((x) => x.id)))}>
+                {allSelected ? "desmarcar todas" : `selecionar todas (${songs.length})`}
+              </button>
+              <button className="chip danger" disabled={!selected.size || deleting} onClick={() => void remove(songs.filter((x) => selected.has(x.id)))}>
+                <Icon name="trash" size={14} /> {deleting ? "apagando…" : `apagar${selected.size ? ` (${selected.size})` : ""}`}
+              </button>
+              <button className="chip ghost" disabled={deleting} onClick={() => setSelected(null)}>
+                cancelar
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="section-head">
+            <span className="muted small">{musicas(songs.length)}{more ? " (mostrando as primeiras)" : ""}</span>
+            <button className="chip ghost" onClick={() => setSelected(new Set())}>
+              <Icon name="check" size={14} /> selecionar
+            </button>
+          </div>
+        ))}
       {songs.length ? (
         <ul className="tracks admin-songs">
           {songs.map((s) => (
-            <li key={s.id}>
-              <div className="track-main">
+            <li key={s.id} className={selected?.has(s.id) ? "selected" : ""}>
+              <div
+                className="track-main"
+                role={selected ? "button" : undefined}
+                aria-pressed={selected ? selected.has(s.id) : undefined}
+                onClick={selected ? () => toggle(s.id) : undefined}
+              >
+                {selected && (
+                  <span className={`check-box${selected.has(s.id) ? " on" : ""}`} aria-hidden="true">
+                    {selected.has(s.id) && <Icon name="check" size={14} />}
+                  </span>
+                )}
                 <Cover cover={coverRef(s)} seed={s.title + s.artist} size={44} />
                 <span className="track-text">
                   <span className="track-title">{s.title}</span>
@@ -244,9 +300,11 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
                   </span>
                 </span>
               </div>
-              <button className="icon-btn danger" title="Apagar do sistema" onClick={() => void remove(s)}>
-                <Icon name="trash" size={18} />
-              </button>
+              {!selected && (
+                <button className="icon-btn danger" title="Apagar do sistema" onClick={() => void remove([s])}>
+                  <Icon name="trash" size={18} />
+                </button>
+              )}
             </li>
           ))}
         </ul>

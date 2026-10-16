@@ -10,6 +10,7 @@ import { Cover } from "./Cover";
 import { DownloadMenu } from "./DownloadMenu";
 import { FavoriteButton } from "./FavoriteButton";
 import { Icon } from "./Icon";
+import { LOCAL_NOTE, WithLocalBadge } from "./LocalBadge";
 import { TagInput } from "./TagInput";
 
 export function TrackSheet() {
@@ -56,9 +57,12 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
   return (
     <>
       <header className="sheet-head">
-        <button className="cover-edit" disabled={shared} onClick={() => fileInput.current?.click()} title="Trocar capa">
-          <Cover cover={track.cover} seed={track.title + track.artist} size={96} />
-          {!shared && <span className="cover-hint">trocar capa</span>}
+        {/* Só deste aparelho: trocar a capa mandaria a imagem para o servidor. */}
+        <button className="cover-edit" disabled={shared || track.local} onClick={() => fileInput.current?.click()} title="Trocar capa">
+          <WithLocalBadge local={track.local}>
+            <Cover cover={track.cover} seed={track.title + track.artist} size={96} />
+          </WithLocalBadge>
+          {!shared && !track.local && <span className="cover-hint">trocar capa</span>}
         </button>
         <input
           ref={fileInput}
@@ -78,6 +82,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
             {formatTime(track.duration)} · {track.sourceInfo}
           </span>
           <span className="muted small">{sizes}</span>
+          {track.local && <span className="local-note">{LOCAL_NOTE}</span>}
         </div>
         <FavoriteButton id={id} />
         <button className="icon-btn" onClick={closeTrack} title="Fechar">
@@ -88,7 +93,7 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
       <div className="sheet-actions">
         <button onClick={() => (playNext(id), toast("Toca em seguida"), closeTrack())}>Tocar em seguida</button>
         <button onClick={() => (addToQueue([id]), toast("Adicionada à fila"))}>Adicionar à fila</button>
-        <DownloadMenu ids={[id]} className="dl-trigger" />
+        {!track.local && <DownloadMenu ids={[id]} className="dl-trigger" />}
       </div>
 
       {!shared && (
@@ -162,7 +167,14 @@ function Editor({ id, track, shared }: { id: string; track: Track; shared: boole
               onClick={async () => {
                 // Música do catálogo é de todos: sai só da sua biblioteca (e dos seus downloads).
                 const ok = await confirmDialog(
-                  track.song
+                  track.local
+                    ? {
+                        title: "Excluir música?",
+                        message: `"${track.title}" só existe neste celular (não foi para o servidor). Excluir apaga de vez: não dá para recuperar.`,
+                        confirm: "excluir",
+                        danger: true,
+                      }
+                    : track.song
                     ? {
                         title: "Tirar da biblioteca?",
                         message: `"${track.title}" sai da sua biblioteca, das suas playlists e dos downloads deste aparelho. Ela continua no yfitops: dá para achar na busca e adicionar de novo.`,

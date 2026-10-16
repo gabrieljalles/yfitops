@@ -5,6 +5,7 @@ import { formatTime } from "../lib/tracks";
 import { openTrack, uiStore } from "../lib/ui";
 import { Cover } from "./Cover";
 import { FavoriteButton } from "./FavoriteButton";
+import { LOCAL_NOTE, WithLocalBadge } from "./LocalBadge";
 import { Icon } from "./Icon";
 
 /** Enquanto a música carrega: "baixando… 42%" (não está no aparelho) ou "carregando…". Curto: cabe no celular. */
@@ -31,7 +32,9 @@ export function PlayerBar() {
     <div className="player-bar">
       <div className="bar-progress" style={{ width: `${pct}%` }} />
       <button className="bar-info" onClick={() => uiStore.set((s) => ({ ...s, fullPlayer: true }))}>
-        <Cover cover={track.cover} seed={track.title + track.artist} size={42} spinning={p.playing} sleeve />
+        <WithLocalBadge local={track.local}>
+          <Cover cover={track.cover} seed={track.title + track.artist} size={42} spinning={p.playing} sleeve />
+        </WithLocalBadge>
         <span className="track-text">
           <span className="track-title">{track.title}</span>
           <span className="track-sub">{p.error ?? loadingText(p) ?? (track.artist || "Artista desconhecido")}</span>
@@ -77,7 +80,11 @@ export function FullPlayer() {
             <h2>{track.title}</h2>
             <FavoriteButton id={id} size={24} />
           </div>
-          <p className="muted">{[track.artist, track.album].filter(Boolean).join(" · ") || "Artista desconhecido"}</p>
+          <p className="muted">
+            {track.local && <span className="local-badge inline">local</span>}
+            {[track.artist, track.album].filter(Boolean).join(" · ") || "Artista desconhecido"}
+          </p>
+          {track.local && <p className="local-note">{LOCAL_NOTE}</p>}
           {p.error ? (
             <p className="error">{p.error}</p>
           ) : (

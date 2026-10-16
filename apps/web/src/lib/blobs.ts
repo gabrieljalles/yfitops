@@ -194,7 +194,37 @@ export async function saveOffline(ref: BlobRef) {
   await fetchSealed(ref, true);
 }
 
+// ---------------- Músicas só deste aparelho ----------------
+// Mais de 13 minutos não vai para o servidor: o arquivo fica só nos downloads
+// do aparelho, com um ID "local-…" (o servidor não tem nada com esse nome).
+
+const LOCAL_PREFIX = "local-";
+export const isLocalRef = (ref: BlobRef | undefined) => !!ref && ref.id.startsWith(LOCAL_PREFIX);
+const isLocalKey = (key: string) => key.startsWith(`songs/${LOCAL_PREFIX}`);
+
+/** Guarda um arquivo que só existe neste aparelho (não é apagado por "Apagar downloads"). */
+export async function keepLocal(trackId: string, kind: "audio" | "cover", data: Uint8Array, mime: string): Promise<BlobRef> {
+  const ref: BlobRef = { id: `${LOCAL_PREFIX}${trackId}`, shared: kind, size: data.length, mime };
+  const key = fileKey(ref);
+  await (await db()).put("files", { key, data: new Blob([data as BlobPart], { type: mime }), size: data.length, at: Date.now() });
+  offlineStore.set((s) => new Set(s).add(key));
+  return ref;
+}
+
+/** Apaga de vez um arquivo só deste aparelho (a música saiu da biblioteca). */
+export async function dropLocal(ref: BlobRef) {
+  if (!isLocalRef(ref)) return;
+  await (await db()).delete("files", fileKey(ref));
+  offlineStore.set((s) => {
+    const n = new Set(s);
+    n.delete(fileKey(ref));
+    return n;
+  });
+}
+
 export async function removeOffline(ref: BlobRef) {
+  // Só existe aqui: tirar dos downloads seria perder a música.
+  if (isLocalRef(ref)) return;
   await (await db()).delete("files", fileKey(ref));
   offlineStore.set((s) => {
     const n = new Set(s);
@@ -208,9 +238,13 @@ export async function offlineUsage(): Promise<number> {
   return all.reduce((n, f) => n + f.size, 0);
 }
 
+/** Apaga os downloads offline. As músicas só deste aparelho ficam (não há outra cópia). */
 export async function clearOffline() {
-  await (await db()).clear("files");
-  offlineStore.set(new Set());
+  const d = await db();
+  const keys = (await d.getAllKeys("files")).map(String).filter((k) => !isLocalKey(k));
+  const tx = d.transaction("files", "readwrite");
+  await Promise.all([...keys.map((k) => tx.store.delete(k)), tx.done]);
+  offlineStore.set(new Set([...offlineStore.get()].filter(isLocalKey)));
 }
 
 // ---------------- Escolha de qualidade ----------------

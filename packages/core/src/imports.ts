@@ -37,6 +37,8 @@ export type ImportTrackStatus = "queued" | "working" | "done" | "failed" | "skip
 export const MAX_SONG_SECONDS = 13 * 60;
 /** Motivo gravado na música ignorada por ser longa demais. */
 export const TOO_LONG = "tem mais de 13 minutos: não entra no yfitops";
+/** Longa demais, mas baixada pelo celular de quem pediu: ficou só nele. */
+export const TOO_LONG_LOCAL = "tem mais de 13 minutos: ficou só no celular que baixou";
 
 export interface ImportTrackInfo {
   id: string;
@@ -68,7 +70,8 @@ export interface ImportRequestInfo {
 /** O que o servidor entrega a um celular que pede trabalho. */
 export type SpotJob =
   | { type: "list"; id: string; url: string }
-  | { type: "track"; id: string; requestId: string; meta: ResolvedTrack };
+  /** `mine`: o pedido é de quem está com este celular (aí uma música longa fica nele). */
+  | { type: "track"; id: string; requestId: string; meta: ResolvedTrack; mine: boolean };
 
 /** Tipo da falha: "limit" = o YouTube barrou este celular (descansa); "gone" = não existe; "temp" = passageira. */
 export type SpotFailKind = "limit" | "gone" | "temp";

@@ -1,4 +1,4 @@
-import { TOO_LONG, type ImportOpts, type ImportRequestInfo, type ImportTrackInfo, type ResolvedTrack } from "@yfitops/core";
+import { MAX_SONG_SECONDS, TOO_LONG, TOO_LONG_LOCAL, type ImportOpts, type ImportRequestInfo, type ImportTrackInfo, type ResolvedTrack } from "@yfitops/core";
 import { api } from "./api";
 import { addSong, songTrackId } from "./catalog";
 import { createPlaylist, libraryStore, saveItem } from "./library";
@@ -186,10 +186,14 @@ export async function syncPlaylist(playlistId: string) {
 
 // ---------------- Acompanhar e receber ----------------
 
-/** O pedido terminou (nada mais na fila nem baixando)? */
-/** Quantas foram ignoradas por passar de 13 minutos. */
+/** Quantas ficaram de fora por passar de 13 minutos. */
 const tooLong = (r: ImportRequestInfo) => r.tracks.filter((t) => t.status === "skipped" && t.error === TOO_LONG).length;
+/** Quantas passaram de 13 minutos e ficaram só no seu celular. */
+const keptLocal = (r: ImportRequestInfo) => r.tracks.filter((t) => t.status === "skipped" && t.error === TOO_LONG_LOCAL).length;
+/** Na fila, mas com mais de 13 minutos: só o seu celular Android pode baixar. */
+export const waitsForMyPhone = (t: ImportTrackInfo) => t.status === "queued" && (t.meta.duration ?? 0) > MAX_SONG_SECONDS;
 
+/** O pedido terminou (nada mais na fila nem baixando)? */
 export const finished = (r: ImportRequestInfo) =>
   r.status === "failed" || (r.status === "listed" && !r.tracks.some((t) => t.status === "queued" || t.status === "working"));
 
@@ -200,12 +204,16 @@ export function requestProgress(r: ImportRequestInfo): string {
   if (r.status === "failed") return r.error ?? "o link não pôde ser lido";
   const count = (s: string) => r.tracks.filter((t) => t.status === s).length;
   const now = r.tracks.find((t) => t.status === "working");
+  const mine = r.tracks.filter(waitsForMyPhone).length;
+  const local = keptLocal(r);
   return [
     `${count("done")} de ${r.tracks.length} prontas`,
-    now ? `baixando “${now.meta.title}”` : count("queued") && "na fila, esperando para ser baixado",
+    now ? `baixando “${now.meta.title}”` : count("queued") > mine && "na fila, esperando para ser baixado",
+    mine && `${mine} com mais de 13 minutos esperando o seu celular Android (fica só nele)`,
+    local && `${local} com mais de 13 minutos ficou só no seu celular`,
     count("failed") && `${count("failed")} não deram`,
     tooLong(r) && `${tooLong(r)} com mais de 13 minutos (não entram)`,
-    count("skipped") - tooLong(r) && `${count("skipped") - tooLong(r)} ignoradas`,
+    count("skipped") - tooLong(r) - local && `${count("skipped") - tooLong(r) - local} ignoradas`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -257,11 +265,12 @@ async function deliver(r: ImportRequestInfo): Promise<boolean> {
   }
   const failed = r.tracks.filter((t) => t.status === "failed").length;
   const long = tooLong(r);
-  if (fresh.length || long || r.status === "failed") {
+  const local = keptLocal(r);
+  if (fresh.length || long || local || r.status === "failed") {
     const where = playlistId ? ` em ${libraryStore.get().playlists[playlistId]?.name}` : "";
     void notify(
       failed || r.status === "failed" ? "Importação terminou com falhas" : "Importação concluída",
-      r.status === "failed" ? (r.error ?? "O link não pôde ser lido") : [`${done.length} música(s)${where}`, failed && `${failed} não puderam ser baixadas`, long && `${long} com mais de 13 minutos ficaram de fora`].filter(Boolean).join(" · "),
+      r.status === "failed" ? (r.error ?? "O link não pôde ser lido") : [`${done.length} música(s)${where}`, failed && `${failed} não puderam ser baixadas`, long && `${long} com mais de 13 minutos ficaram de fora`, local && `${local} com mais de 13 minutos ficou só no seu celular`].filter(Boolean).join(" · "),
     );
   }
   // Com falha ou com música longa demais: o card fica, para a pessoa ver o motivo (e dispensar).

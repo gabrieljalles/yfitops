@@ -2,8 +2,8 @@ import { MAX_SONG_SECONDS, type ResolvedTrack, type SongQuery, type SpotFailKind
 import { api, ApiError } from "./api";
 import { artistFromChannel, splitArtistTitle } from "./artist";
 import { findInCatalog } from "./catalog";
-import { publishForQueue } from "./importer";
-import { getTrack } from "./library";
+import { makeCover, publishForQueue } from "./importer";
+import { addLocalTrack, getTrack } from "./library";
 import { canSpot, deviceId, holdAwake, keepAlive, onNativeAction, onWifi, watchNetwork } from "./native";
 import { createStore } from "./observable";
 import { currentTrackId, playerStore, toggle } from "./player";
@@ -174,8 +174,11 @@ async function work(job: SpotJob) {
     patch({ doing: `baixando "${label}"` });
     const dl = await downloadAudio(t.videoId);
     check();
-    // Mais de 13 minutos: baixou, mas não vai para o servidor.
-    if ((dl.duration || t.duration) > MAX_SONG_SECONDS) return await report(`/spot/track/${job.id}`, { device, tooLong: true });
+    // Mais de 13 minutos não vai para o servidor. Se o pedido é de outra pessoa, este
+    // celular não fica com ela: volta para a fila, para o celular de quem pediu.
+    const seconds = dl.duration || t.duration;
+    const tooLong = seconds > MAX_SONG_SECONDS;
+    if (tooLong && !job.mine) return await report(`/spot/track/${job.id}`, { device, tooLong: true, duration: seconds });
     // Do Spotify/Deezer ficam o título e o artista de lá (mais limpos). Do YouTube:
     // "Artista - Título" no nome do vídeo; senão o canal, se for oficial ("- Topic", VEVO).
     if (!t.query || !t.artist) {
@@ -186,6 +189,21 @@ async function work(job: SpotJob) {
     }
     const cover = await fetchCover(t, t.videoId);
     check();
+    if (tooLong) {
+      // O pedido é seu: a música fica só neste celular (com o selo "local").
+      patch({ doing: `guardando "${label}" neste celular` });
+      await addLocalTrack({
+        audio: new Uint8Array(await dl.file.arrayBuffer()),
+        mime: dl.file.type || "audio/webm",
+        cover: cover ? await makeCover(cover).catch(() => undefined) : undefined,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        duration: seconds,
+        source: `youtube:${t.videoId}`,
+      });
+      return await report(`/spot/track/${job.id}`, { device, tooLong: true, local: true, duration: seconds });
+    }
     const songId = await publishForQueue(dl.file, {
       cover,
       source: `youtube:${t.videoId}`,

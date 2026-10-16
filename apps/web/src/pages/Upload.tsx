@@ -20,6 +20,7 @@ import {
   setImportLink,
   setImportTags,
   skipTracks,
+  waitsForMyPhone,
 } from "../lib/imports";
 import { useStore } from "../lib/observable";
 
@@ -195,7 +196,7 @@ function RequestCard({ r }: { r: ImportRequestInfo }) {
                   {i + 1}. {t.meta.title}
                 </span>
                 <span className={`track-sub${t.status === "failed" ? " err" : ""}`}>
-                  {TRACK_STATUS[t.status]}
+                  {waitsForMyPhone(t) ? "esperando o seu celular Android (mais de 13 minutos: fica só nele)" : TRACK_STATUS[t.status]}
                   {t.error && (t.status === "failed" || t.status === "skipped") && ` · ${t.error}`}
                 </span>
               </span>
