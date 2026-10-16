@@ -65,9 +65,12 @@ export function UploadPage() {
           </span>
           <input
             type="text"
-            inputMode="search"
-            enterKeyHint={searchMode ? "search" : "go"}
+            // Sempre os mesmos atributos: trocar o tipo do teclado no meio da digitação
+            // (ex.: o botão "Enter" de "ir" para "buscar") reinicia o teclado do Android e apaga o texto.
+            enterKeyHint="go"
             autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
             aria-label="Link ou nome da música"
             value={link}
             placeholder="Cole um link ou digite o nome da música"

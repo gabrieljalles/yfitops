@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NATIVE_BUILD, nativeBuild } from "../lib/native";
 import { Vinyl } from "./Cover";
 
 /** Versão deste app (gerada no build; vite.config.ts). */
@@ -62,6 +63,43 @@ export function UpdatePrompt() {
           }}
         >
           {busy ? "atualizando…" : "Atualizar agora"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * App Android antigo (parte nativa mais velha que a que o site espera): pede para
+ * instalar o APK novo por cima. O link "http://" abre fora do app, no Chrome, que
+ * baixa o arquivo (o servidor manda para o https). Login e músicas continuam.
+ */
+export function NativeUpdatePrompt() {
+  const [old, setOld] = useState(false);
+  useEffect(() => {
+    void nativeBuild().then((b) => b > 0 && b < NATIVE_BUILD && setOld(true));
+  }, []);
+  if (!old) return null;
+  return (
+    <div className="update-backdrop" role="dialog" aria-modal="true" aria-labelledby="native-update-title">
+      <div className="update-card">
+        <div className="update-disc">
+          <Vinyl seed="" label="var(--brand)" />
+        </div>
+        <h2 id="native-update-title">Atualize o app</h2>
+        <p className="muted">
+          Tem uma versão nova do app do Yfitops. Com ela, os botões do carro, do fone e da tela bloqueada passam a funcionar.
+        </p>
+        <ol className="install-steps">
+          <li>Toque em <strong>Baixar a versão nova</strong>. O Chrome vai abrir e baixar o arquivo.</li>
+          <li>Abra o arquivo baixado e toque em <strong>Atualizar</strong>.</li>
+          <li>Seu login e suas músicas continuam.</li>
+        </ol>
+        <a className="primary install-download" href={`http://${location.host}/api/app/apk`}>
+          Baixar a versão nova
+        </a>
+        <button className="link" onClick={() => setOld(false)}>
+          depois
         </button>
       </div>
     </div>

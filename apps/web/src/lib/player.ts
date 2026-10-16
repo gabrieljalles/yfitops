@@ -52,6 +52,14 @@ export const canCrossfade = (() => {
   return a.volume === 0.5;
 })();
 
+/**
+ * Volume mínimo de um deck tocando. Com volume 0, o Chrome do Android trata o
+ * <audio> como "mudo" e, com a tela desligada, o pausa para economizar bateria
+ * ("video-only background media was paused to save power"): muitos MP3 têm a capa
+ * embutida, que ele conta como vídeo. 2% ninguém ouve, mas o mantém tocando.
+ */
+const MIN_VOLUME = 0.02;
+
 /** Transição em andamento: o deck que está saindo e o "relógio" do volume. */
 let fade: { from: HTMLAudioElement; timer: ReturnType<typeof setInterval> } | null = null;
 /** Já começou a transição para a próxima nesta música? */
@@ -72,8 +80,8 @@ function startFade(from: HTMLAudioElement, seconds: number) {
   const started = performance.now();
   const timer = setInterval(() => {
     const k = Math.min(1, (performance.now() - started) / (seconds * 1000));
-    audio.volume = Math.sin((k * Math.PI) / 2);
-    from.volume = Math.cos((k * Math.PI) / 2);
+    audio.volume = Math.max(MIN_VOLUME, Math.sin((k * Math.PI) / 2));
+    from.volume = Math.max(MIN_VOLUME, Math.cos((k * Math.PI) / 2));
     if (k >= 1) endFade();
   }, 50);
   fade = { from, timer };
@@ -135,11 +143,32 @@ async function urlFor(id: string, ref: BlobRef, onProgress?: (fraction: number) 
 /** Enquanto testa variantes, o evento "error" do <audio> não vira aviso na tela. */
 let probing = false;
 
+/**
+ * O Chrome interrompeu o play() para economizar bateria (tela desligada) ou porque
+ * outro play()/pause() veio logo em seguida. Não é erro da música: tenta de novo.
+ */
+const isInterrupted = (e: unknown) => (e as Error)?.name === "AbortError";
+
+/** Toca; se o sistema interromper, tenta mais duas vezes antes de desistir (sem aviso na tela). */
+async function playSafely(el: HTMLAudioElement): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (el.volume < MIN_VOLUME) el.volume = MIN_VOLUME;
+      await el.play();
+      return;
+    } catch (e) {
+      if (!isInterrupted(e)) throw e;
+      if (attempt >= 2 || el !== audio) return; // trocaram de música no meio: nada a fazer
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+}
+
 /** Carrega uma URL no <audio>; rejeita se o navegador não decodificar o formato. */
 function tryLoad(url: string, autoplay: boolean): Promise<void> {
   const el = audio;
   el.src = url;
-  if (autoplay) return el.play();
+  if (autoplay) return playSafely(el);
   return new Promise((resolve, reject) => {
     const ok = () => (cleanup(), resolve());
     const fail = () => (cleanup(), reject(el.error ?? new Error("formato não suportado")));
@@ -175,7 +204,7 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
     endFade();
     fadingFrom = audio;
     audio = otherDeck();
-    audio.volume = 0;
+    audio.volume = MIN_VOLUME;
   } else {
     // Troca "na mão" (próxima, anterior, escolher outra): corta na hora.
     endFade();
@@ -289,7 +318,7 @@ export function jumpTo(index: number) {
 export function toggle() {
   if (playerStore.get().index < 0) return;
   endFade(); // pausar no meio da transição para as duas
-  if (audio.paused) void audio.play().catch(() => {});
+  if (audio.paused) void playSafely(audio).catch(() => {});
   else audio.pause();
 }
 
@@ -297,7 +326,7 @@ export function next(auto = false) {
   const s = playerStore.get();
   if (auto && s.repeat === "one") {
     audio.currentTime = 0;
-    void audio.play();
+    void playSafely(audio).catch(() => {});
     return;
   }
   if (s.index + 1 < s.queue.length) void loadIndex(s.index + 1);

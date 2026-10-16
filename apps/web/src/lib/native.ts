@@ -85,25 +85,75 @@ export function watchNetwork(cb: () => void): void {
   else addEventListener("online", cb);
 }
 
+/** O que está tocando, para os controles do sistema (carro, fone, tela bloqueada). */
+export interface NowPlaying {
+  title: string;
+  artist: string;
+  album: string;
+  playing: boolean;
+  /** Segundos. */
+  position: number;
+  duration: number;
+}
+
 interface KeepAlivePlugin {
-  /** Mantém o app vivo com a tela desligada enquanto toca (notificação "Tocando"). */
+  /** Mantém o app vivo com a tela desligada enquanto toca (notificação "Tocando"). App antigo (build 1). */
   start(opts: { title: string; text: string }): Promise<void>;
+  /** Player de música do Android (MediaSession): o carro e o fone controlam o Yfitops. Desde o build 2. */
+  media(opts: NowPlaying): Promise<void>;
+  /** Versão (versionCode) do app instalado. Desde o build 2. */
+  version(): Promise<{ build: number }>;
   stop(): Promise<void>;
   /** Segura o Wi-Fi e o processador acordados durante um download. */
   busy(opts: { on: boolean }): Promise<void>;
-  /** "pause": tocaram em "Pausar" na notificação. */
+  /** "play", "pause", "next", "prev" ou "seek:<segundos>" (notificação, carro, fone, tela bloqueada). */
   addListener(event: "action", cb: (e: { action: string }) => void): Promise<{ remove: () => Promise<void> }>;
 }
 
 const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
 
-/** Música tocando no app Android: o sistema não fecha o app com a tela desligada. */
-export function keepAlive(playing: boolean, title = "", text = "") {
-  if (!isNativeApp()) return;
-  void (playing ? KeepAlive.start({ title: title || "Yfitops", text }) : KeepAlive.stop()).catch(() => {});
+/**
+ * Versão do app Android que o site espera. Suba junto com o versionCode do APK
+ * quando a parte nativa mudar: quem tiver um app mais antigo é avisado para instalar o novo.
+ */
+export const NATIVE_BUILD = 2;
+
+/** Versão do app Android instalado (0 = não é o app; 1 = app antigo, sem `version`). */
+export async function nativeBuild(): Promise<number> {
+  if (!isNativeApp()) return 0;
+  try {
+    return (await KeepAlive.version()).build;
+  } catch {
+    return 1;
+  }
 }
 
-/** Botões da notificação "tocando" (ex.: "Pausar"). */
+/** App antigo (build 1): só mantém vivo, sem player de música no sistema. */
+let legacy = false;
+
+/**
+ * O que está tocando, para o Android (null = parou de vez). Com música na fila, o
+ * Yfitops fica registrado como o player do celular, inclusive pausado: assim o
+ * "play" do carro ou do fone volta a tocar.
+ */
+export function nowPlaying(np: NowPlaying | null) {
+  if (!isNativeApp()) return;
+  if (!np) {
+    void KeepAlive.stop().catch(() => {});
+    return;
+  }
+  if (legacy) {
+    void (np.playing ? KeepAlive.start({ title: np.title || "Yfitops", text: np.artist }) : KeepAlive.stop()).catch(() => {});
+    return;
+  }
+  void KeepAlive.media(np).catch(() => {
+    // App antigo: não tem o player de música; mantém só o "app vivo" de antes.
+    legacy = true;
+    nowPlaying(np);
+  });
+}
+
+/** Comandos do sistema: notificação, carro, fone Bluetooth, tela bloqueada. */
 export function onNativeAction(cb: (action: string) => void) {
   if (isNativeApp()) void KeepAlive.addListener("action", (e) => cb(e.action)).catch(() => {});
 }

@@ -85,6 +85,12 @@ app.onError((err, c) => {
   return c.json({ error: "Erro interno" }, 500);
 });
 
+/**
+ * Baixar o APK de dentro do app Android: o app abre links "http://" fora dele (no
+ * Chrome), e o Chrome chega aqui e é mandado para o download seguro (https). Aberto, sem login.
+ */
+app.get("/app/apk", (c) => c.redirect(`https://${new URL(c.req.url).host}/yfitops.apk`, 302));
+
 function fail(status: 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 502, message: string): never {
   throw new HTTPException(status, { message });
 }

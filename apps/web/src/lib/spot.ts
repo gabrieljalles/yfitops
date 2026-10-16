@@ -4,9 +4,9 @@ import { artistFromChannel, splitArtistTitle } from "./artist";
 import { findInCatalog } from "./catalog";
 import { makeCover, publishForQueue } from "./importer";
 import { addLocalTrack, getTrack } from "./library";
-import { canSpot, deviceId, holdAwake, keepAlive, onNativeAction, onWifi, watchNetwork } from "./native";
+import { canSpot, deviceId, holdAwake, nowPlaying, onNativeAction, onWifi, watchNetwork } from "./native";
 import { createStore } from "./observable";
-import { currentTrackId, playerStore, toggle } from "./player";
+import { currentTrackId, next, playerStore, prev, seek, toggle } from "./player";
 import { sessionStore } from "./session";
 import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from "./sources";
 
@@ -251,16 +251,42 @@ export function startSpot() {
   watchNetwork(refreshWifi);
   document.addEventListener("visibilitychange", kick);
   sessionStore.subscribe(kick);
-  // "Pausar" na notificação (com a tela desligada não dá para abrir o app e pausar).
-  onNativeAction((action) => action === "pause" && playerStore.get().playing && toggle());
-  // Tocando: o app continua vivo com a tela desligada (e pode ajudar).
+  // Comandos do Android: notificação, carro, fone Bluetooth e tela bloqueada.
+  onNativeAction((action) => {
+    const { playing, index } = playerStore.get();
+    if (action === "play") !playing && index >= 0 && toggle();
+    else if (action === "pause") playing && toggle();
+    else if (action === "next") next();
+    else if (action === "prev") prev();
+    else if (action.startsWith("seek:")) seek(Number(action.slice(5)) || 0);
+  });
+  // O que está tocando vai para o Android (o app continua vivo com a tela desligada
+  // e o carro mostra a música). Manda só quando muda: música, play/pause ou um pulo.
+  let last = "";
+  let lastTime = 0;
+  let lastAt = 0;
   let wasPlaying = false;
   playerStore.subscribe(() => {
-    const { playing } = playerStore.get();
-    if (playing === wasPlaying) return;
-    wasPlaying = playing;
-    const t = getTrack(currentTrackId() ?? "");
-    keepAlive(playing, t?.title, t?.artist);
-    kick();
+    const s = playerStore.get();
+    const id = currentTrackId();
+    const t = id ? getTrack(id) : undefined;
+    if (s.playing !== wasPlaying) {
+      wasPlaying = s.playing;
+      kick();
+    }
+    if (!t || s.index < 0) {
+      if (last) nowPlaying(null);
+      last = "";
+      return;
+    }
+    // Pulo: a posição não bate com o tempo que passou desde a última vez.
+    const expected = lastTime + (wasPlaying ? (Date.now() - lastAt) / 1000 : 0);
+    const jumped = Math.abs(s.time - expected) > 2.5;
+    const key = `${id}|${s.playing}|${Math.round(s.duration)}`;
+    if (key === last && !jumped) return;
+    last = key;
+    lastTime = s.time;
+    lastAt = Date.now();
+    nowPlaying({ title: t.title, artist: t.artist, album: t.album, playing: s.playing, position: s.time, duration: s.duration || t.duration });
   });
 }

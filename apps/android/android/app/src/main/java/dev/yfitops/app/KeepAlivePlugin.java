@@ -3,12 +3,16 @@ package dev.yfitops.app;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.pm.PackageInfoCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -46,6 +50,52 @@ public class KeepAlivePlugin extends Plugin {
             // O sistema pode recusar (app em segundo plano): a música continua, só sem a garantia.
         }
         call.resolve();
+    }
+
+    /**
+     * O que está tocando (para o carro, o fone, a tela bloqueada e a notificação).
+     * Liga o serviço na primeira vez; depois só atualiza.
+     */
+    @PluginMethod
+    public void media(PluginCall call) {
+        String title = call.getString("title", "Yfitops");
+        String artist = call.getString("artist", "");
+        String album = call.getString("album", "");
+        boolean playing = Boolean.TRUE.equals(call.getBoolean("playing", true));
+        double position = call.getDouble("position", 0.0);
+        double duration = call.getDouble("duration", 0.0);
+        KeepAliveService service = KeepAliveService.instance;
+        if (service != null) {
+            new Handler(Looper.getMainLooper()).post(() -> service.update(title, artist, album, playing, position, duration));
+        } else {
+            askNotifications();
+            Intent intent = new Intent(getContext(), KeepAliveService.class);
+            intent.putExtra("title", title);
+            intent.putExtra("artist", artist);
+            intent.putExtra("album", album);
+            intent.putExtra("playing", playing);
+            intent.putExtra("position", position);
+            intent.putExtra("duration", duration);
+            try {
+                ContextCompat.startForegroundService(getContext(), intent);
+            } catch (Exception e) {
+                // O sistema pode recusar (app em segundo plano): a música continua, só sem os controles.
+            }
+        }
+        call.resolve();
+    }
+
+    /** Versão do app instalado (o site avisa quando há um APK mais novo para instalar). */
+    @PluginMethod
+    public void version(PluginCall call) {
+        JSObject out = new JSObject();
+        try {
+            PackageInfo info = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+            out.put("build", PackageInfoCompat.getLongVersionCode(info));
+        } catch (PackageManager.NameNotFoundException e) {
+            out.put("build", 0);
+        }
+        call.resolve(out);
     }
 
     @PluginMethod
