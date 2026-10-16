@@ -11,6 +11,8 @@ export interface Prefs {
   textSize: TextSize;
   /** Segundos de transição suave entre músicas (0 = desligada). */
   crossfade: number;
+  /** A pessoa já escolheu a transição em Ajustes (senão vale o padrão, 5 s). */
+  crossfadeChosen?: boolean;
   /** Avisar quando uma importação/envio terminar com o app em segundo plano. */
   notify: boolean;
   /** Limite do cache de músicas ouvidas, em MB (tocar de novo não usa a internet nem o servidor). */
@@ -20,7 +22,8 @@ export interface Prefs {
 const DEFAULTS: Prefs = {
   theme: "system",
   textSize: "normal",
-  crossfade: 0,
+  // Padrão para todo mundo: 5 s. Quem quiser muda em Ajustes.
+  crossfade: 5,
   notify: true,
   cacheMB: 1024,
 };
@@ -32,6 +35,8 @@ export const MIN_CACHE_MB = 512;
 function load(): Prefs {
   try {
     const p: Prefs = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
+    // Preferências salvas antes do padrão de 5 s guardavam o 0 antigo sem a pessoa ter escolhido.
+    if (!p.crossfadeChosen) p.crossfade = DEFAULTS.crossfade;
     return { ...p, cacheMB: Math.max(MIN_CACHE_MB, Number(p.cacheMB) || MIN_CACHE_MB) };
   } catch {
     return DEFAULTS;
@@ -41,7 +46,7 @@ function load(): Prefs {
 export const prefsStore = createStore<Prefs>(load());
 
 export function setPref<K extends keyof Prefs>(key: K, value: Prefs[K]) {
-  prefsStore.set((p) => ({ ...p, [key]: value }));
+  prefsStore.set((p) => ({ ...p, [key]: value, ...(key === "crossfade" && { crossfadeChosen: true }) }));
   try {
     localStorage.setItem(KEY, JSON.stringify(prefsStore.get()));
   } catch {
