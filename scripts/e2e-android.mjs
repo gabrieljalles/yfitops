@@ -156,6 +156,23 @@ try {
   await desk.goto(URL + "#/biblioteca");
   await desk.getByRole("button", { name: "Playlists" }).click();
   console.log("    playlists de quem pediu:", (await desk.locator(".grid-item .track-title").allInnerTexts()).join(", "));
+  // Quem baixou só ajudou: nada fica no celular dele (nem no cache, nem offline, nem na biblioteca).
+  const kept = await phone.evaluate(
+    () =>
+      new Promise((ok, fail) => {
+        const r = indexedDB.open("yfitops");
+        r.onerror = () => fail(r.error);
+        r.onsuccess = () => {
+          const stores = ["cache", "files", "items"];
+          const tx = r.result.transaction(stores);
+          const out = {};
+          for (const s of stores) tx.objectStore(s).count().onsuccess = (e) => (out[s] = e.target.result);
+          tx.oncomplete = () => (r.result.close(), ok(out));
+        };
+      }),
+  );
+  console.log(`    guardado no celular que baixou: ${kept.cache} no cache, ${kept.files} offline, ${kept.items} na biblioteca`);
+  if (kept.cache || kept.files || kept.items) throw new Error("O celular que baixou ficou com músicas que não pediu");
 
   step("tocando com a tela desligada: o app continua vivo");
   const service = () => (/KeepAliveService/.test(adb("shell", "dumpsys", "activity", "services", "dev.yfitops.app")) ? "rodando" : "parado");

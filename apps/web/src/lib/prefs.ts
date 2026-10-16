@@ -13,8 +13,6 @@ export interface Prefs {
   crossfade: number;
   /** Avisar quando uma importação/envio terminar com o app em segundo plano. */
   notify: boolean;
-  /** App Android: ajudar a baixar as músicas pedidas por link (só no Wi-Fi). */
-  helpDownloads: boolean;
   /** Limite do cache de músicas ouvidas, em MB (tocar de novo não usa a internet nem o servidor). */
   cacheMB: number;
 }
@@ -24,13 +22,12 @@ const DEFAULTS: Prefs = {
   textSize: "normal",
   crossfade: 0,
   notify: true,
-  helpDownloads: true,
   cacheMB: 1024,
 };
 const KEY = "prefs";
 
-/** O cache guarda no mínimo 1 GB: menos que isso, a mesma música seria pedida ao servidor toda hora. */
-export const MIN_CACHE_MB = 1024;
+/** O cache guarda no mínimo 500 MB: menos que isso, a mesma música seria pedida ao servidor toda hora. */
+export const MIN_CACHE_MB = 512;
 
 function load(): Prefs {
   try {

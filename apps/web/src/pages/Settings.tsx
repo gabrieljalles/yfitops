@@ -235,7 +235,7 @@ export function SettingsPage() {
         <h2>Músicas já ouvidas</h2>
         <p className="muted small">
           Cada música vem do servidor uma vez só: depois de ouvida, fica guardada aqui e tocar de novo não usa internet. Quando passa do limite,
-          saem as ouvidas há mais tempo. Mais espaço = menos downloads repetidos (1 GB ≈ 170 músicas).
+          saem as ouvidas há mais tempo. Mais espaço = menos downloads repetidos (500 MB ≈ 85 músicas, 1 GB ≈ 170).
         </p>
         <div className="setting-row">
           <span>Guardar até</span>
@@ -247,6 +247,7 @@ export function SettingsPage() {
               void trimCache().then(() => cacheUsage().then(setCached));
             }}
             options={[
+              ["512", "500 MB"],
               ["1024", "1 GB"],
               ["2048", "2 GB"],
               ["4096", "4 GB"],
@@ -341,34 +342,32 @@ function Segmented<T extends string>({
 
 /**
  * Ajudar a baixar as músicas pedidas por link. Só o app Android consegue (o
- * navegador não deixa um site baixar do YouTube), e só no Wi-Fi.
+ * navegador não deixa um site baixar do YouTube), e só no Wi-Fi. Todo app
+ * Android ajuda: não há como desligar.
  */
 function HelpSettings() {
-  const prefs = useStore(prefsStore);
   const spot = useStore(spotStore);
   return (
     <section>
       <h2>Baixar músicas pedidas por link</h2>
       {spot.capable ? (
         <>
-          <label className="setting-row">
+          <div className="setting-row">
             <span>
               Este celular ajuda a baixar
               <small className="muted">
-                Só no Wi-Fi, com o app aberto ou tocando música. Baixa para quem pediu (pode ser outra pessoa); as músicas não entram na sua biblioteca.
+                Todo app Android ajuda, só no Wi-Fi e com o app aberto ou tocando música. Baixa para quem pediu (pode ser outra pessoa): a música vai
+                só para o servidor e não fica neste celular nem entra na sua biblioteca.
               </small>
             </span>
-            <input type="checkbox" className="switch" checked={prefs.helpDownloads} onChange={(e) => setPref("helpDownloads", e.target.checked)} />
-          </label>
-          {prefs.helpDownloads && (
-            <p className="muted small" role="status">
-              {spot.resting
-                ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."
-                : spot.active
-                  ? `${spot.doing ? `Agora: ${spot.doing}.` : "Pronto para ajudar: esperando pedidos."}${spot.done ? ` Já baixou ${spot.done} música(s) desde que o app abriu.` : ""}`
-                  : `Parado: ${spot.reason}.`}
-            </p>
-          )}
+          </div>
+          <p className="muted small" role="status">
+            {spot.resting
+              ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."
+              : spot.active
+                ? `${spot.doing ? `Agora: ${spot.doing}.` : "Pronto para ajudar: esperando pedidos."}${spot.done ? ` Já baixou ${spot.done} música(s) desde que o app abriu.` : ""}`
+                : `Parado: ${spot.reason}.`}
+          </p>
         </>
       ) : isAndroidBrowser() ? (
         <p className="muted small">

@@ -7,7 +7,6 @@ import { getTrack } from "./library";
 import { canSpot, deviceId, holdAwake, keepAlive, onNativeAction, onWifi, watchNetwork } from "./native";
 import { createStore } from "./observable";
 import { currentTrackId, playerStore, toggle } from "./player";
-import { prefsStore } from "./prefs";
 import { sessionStore } from "./session";
 import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from "./sources";
 
@@ -15,6 +14,7 @@ import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from 
 // Este celular ajudando a fila de importação (só no app Android).
 //
 // Regras:
+//   - todo app Android ajuda (não há como desligar);
 //   - só no Wi-Fi (quem baixa para os outros não gasta dados móveis);
 //   - só com o app aberto na tela, ou tocando música (aí vale com a tela
 //     desligada). Pausou a música, ou saiu do app sem música: para na hora, e
@@ -54,7 +54,6 @@ class Stopped extends Error {}
 function blocker(): string {
   const s = sessionStore.get();
   if (!s || s.status === "pending") return "sem conta";
-  if (!prefsStore.get().helpDownloads) return "desligado nos Ajustes";
   if (!wifi) return "só ajuda no Wi-Fi";
   if (document.visibilityState !== "visible" && !playerStore.get().playing) return "só com o app aberto ou tocando música";
   return "";
@@ -231,7 +230,6 @@ export function startSpot() {
   refreshWifi();
   watchNetwork(refreshWifi);
   document.addEventListener("visibilitychange", kick);
-  prefsStore.subscribe(kick);
   sessionStore.subscribe(kick);
   // "Pausar" na notificação (com a tela desligada não dá para abrir o app e pausar).
   onNativeAction((action) => action === "pause" && playerStore.get().playing && toggle());
