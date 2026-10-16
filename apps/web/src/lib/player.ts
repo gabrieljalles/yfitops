@@ -109,6 +109,19 @@ function remember(id: string, url: string) {
   }
 }
 
+/**
+ * Arquivo que está tocando agora (a nebulosa do player lê o mesmo arquivo já baixado
+ * para calcular a batida). `key` = id do arquivo, igual em qualquer aparelho.
+ */
+export function nowPlayingFile(): { key: string; url: string } | null {
+  if (!currentUrl) return null;
+  for (const [k, u] of decoded) if (u === currentUrl) return { key: k.slice(k.lastIndexOf(":") + 1), url: u };
+  return null;
+}
+
+/** Segundo exato da música tocando (o playerStore só atualiza algumas vezes por segundo). */
+export const playbackTime = () => audio.currentTime;
+
 async function urlFor(id: string, ref: BlobRef, onProgress?: (fraction: number) => void): Promise<string> {
   const key = `${id}:${ref.id}`;
   const hit = decoded.get(key);

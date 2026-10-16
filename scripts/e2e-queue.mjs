@@ -55,8 +55,25 @@ async function signup(p, email) {
   await p.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
 }
 
+/** O convite para instalar o app cobre a tela logo depois de entrar: nos testes, já vem dispensado. */
+function skipInstallPrompt(b) {
+  const open = b.newContext.bind(b);
+  b.newContext = async (opts) => {
+    const ctx = await open(opts);
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem("yfitops.install-app-dismissed", String(Date.now()));
+      } catch {}
+    });
+    return ctx;
+  };
+  return b;
+}
+
 const pc = await chromium.launch({ executablePath: CHROME });
 const phoneBrowser = await chromium.launch({ executablePath: CHROME, args: ["--disable-web-security", "--disable-site-isolation-trials"] });
+skipInstallPrompt(pc);
+skipInstallPrompt(phoneBrowser);
 let failed = false;
 try {
   const desk = await (await pc.newContext({ viewport: { width: 1280, height: 860 } })).newPage();

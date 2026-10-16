@@ -2320,3 +2320,41 @@ select {
   vertical-align: -3px;
   color: var(--accent);
 }
+
+/* ---------- Nebulosa atrás do vinil (player em tela cheia) ---------- */
+
+.full-player {
+  overflow-x: hidden;
+}
+.fp-art {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.fp-art .fp-cover {
+  position: relative;
+  z-index: 1;
+}
+.nebula {
+  position: absolute;
+  inset: -8% 0;
+  z-index: 0;
+  pointer-events: none;
+}
+/* Centro do conjunto capa + metade do disco que sai pela direita. */
+.nebula i {
+  position: absolute;
+  left: 51%;
+  top: 50%;
+  width: 54%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(26px);
+  mix-blend-mode: screen;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+/* No tema claro, "screen" sumiria no fundo claro. */
+:root[data-theme="light"] .nebula i {
+  mix-blend-mode: normal;
+}

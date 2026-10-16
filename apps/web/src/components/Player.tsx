@@ -1,3 +1,7 @@
+import { useEffect, useState } from "react";
+import type { BlobRef } from "@yfitops/core";
+import { coverUrl } from "../lib/blobs";
+import { dominantColor } from "../lib/color";
 import { getTrackFrom, libraryStore } from "../lib/library";
 import { useStore } from "../lib/observable";
 import { cycleRepeat, jumpTo, next, playerStore, prev, seek, toggle, toggleShuffle, type PlayerState } from "../lib/player";
@@ -7,6 +11,24 @@ import { Cover } from "./Cover";
 import { FavoriteButton } from "./FavoriteButton";
 import { LOCAL_NOTE, WithLocalBadge } from "./LocalBadge";
 import { Icon } from "./Icon";
+import { Nebula } from "./Nebula";
+
+/** Cor predominante da capa (a mesma do rótulo do vinil). */
+function useCoverColor(cover?: BlobRef): string | null {
+  const [color, setColor] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setColor(null);
+    if (cover)
+      coverUrl(cover)
+        .then((src) => dominantColor(cover.id, src))
+        .then((c) => alive && setColor(c), () => {});
+    return () => {
+      alive = false;
+    };
+  }, [cover?.id]);
+  return color;
+}
 
 /** Enquanto a música carrega: "baixando… 42%" (não está no aparelho) ou "carregando…". Curto: cabe no celular. */
 function loadingText(p: PlayerState): string | null {
@@ -59,6 +81,7 @@ export function PlayerBar() {
 export function FullPlayer() {
   const { fullPlayer } = useStore(uiStore);
   const { p, id, track, lib } = useCurrent();
+  const coverColor = useCoverColor(track?.cover);
   if (!fullPlayer || !track || !id) return null;
   const close = () => uiStore.set((s) => ({ ...s, fullPlayer: false }));
   const upcoming = p.queue.slice(p.index + 1, p.index + 30);
@@ -74,7 +97,11 @@ export function FullPlayer() {
         </button>
       </header>
       <div className="fp-body">
-        <Cover cover={track.cover} seed={track.title + track.artist} spinning={p.playing} sleeve className="fp-cover" />
+        {/* Nebulosa atrás do vinil (que continua girando enquanto toca), na cor da capa e no ritmo da música. */}
+        <div className="fp-art">
+          <Nebula color={coverColor} playing={p.playing} />
+          <Cover cover={track.cover} seed={track.title + track.artist} spinning={p.playing} sleeve className="fp-cover" />
+        </div>
         <div className="fp-meta">
           <div className="fp-title-row">
             <h2>{track.title}</h2>

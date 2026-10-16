@@ -38,8 +38,25 @@ function wav24(seconds = 6, rate = 44100) {
   return Buffer.concat([h, data]);
 }
 
+/** O convite para instalar o app cobre a tela logo depois de entrar: nos testes, já vem dispensado. */
+function skipInstallPrompt(b) {
+  const open = b.newContext.bind(b);
+  b.newContext = async (opts) => {
+    const ctx = await open(opts);
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem("yfitops.install-app-dismissed", String(Date.now()));
+      } catch {}
+    });
+    return ctx;
+  };
+  return b;
+}
+
 const browser = await chromium.launch({ executablePath: CHROME, args: ["--autoplay-policy=no-user-gesture-required"] });
 const helperBrowser = await chromium.launch({ executablePath: CHROME, args: ["--disable-web-security", "--disable-site-isolation-trials"] });
+skipInstallPrompt(browser);
+skipInstallPrompt(helperBrowser);
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const page = await ctx.newPage();
 const logs = [];
@@ -170,6 +187,32 @@ try {
   if (await play.count()) await play.click();
   await page.locator(".fp-cover.sleeve.out").waitFor({ timeout: 10000 });
   console.log("   vinil saindo da capa ✓");
+  // Nebulosa atrás do vinil: o mapa da batida é calculado no aparelho e guardado.
+  await page.locator(".fp-art .nebula").waitFor();
+  let beat = null;
+  for (let i = 0; i < 20 && !beat; i++) {
+    beat = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const req = indexedDB.open("yfitops");
+          req.onsuccess = () => {
+            const store = req.result.transaction("kv").objectStore("kv");
+            const keys = store.getAllKeys();
+            keys.onsuccess = () => {
+              const k = keys.result.find((x) => String(x).startsWith("beat:"));
+              if (!k) return resolve(null);
+              const v = store.get(k);
+              v.onsuccess = () => resolve({ points: v.result.length, max: Math.max(...v.result) });
+            };
+          };
+          req.onerror = () => resolve(null);
+        }),
+    );
+    if (!beat) await page.waitForTimeout(500);
+  }
+  if (!beat) throw new Error("o mapa da batida não foi calculado");
+  console.log(`   nebulosa: mapa da batida com ${beat.points} pontos (pico ${beat.max}/255) ✓`);
+  await page.waitForTimeout(1500);
   await shot("09-player");
   await page.locator('.full-player button[title="Minimizar"]').click();
 
