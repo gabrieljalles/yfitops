@@ -116,7 +116,7 @@ const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
  * Versão do app Android que o site espera. Suba junto com o versionCode do APK
  * quando a parte nativa mudar: quem tiver um app mais antigo é avisado para instalar o novo.
  */
-export const NATIVE_BUILD = 2;
+export const NATIVE_BUILD = 3;
 
 /** Versão do app Android instalado (0 = não é o app; 1 = app antigo, sem `version`). */
 export async function nativeBuild(): Promise<number> {

@@ -15,7 +15,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Suba quando a parte nativa mudar (e NATIVE_BUILD em apps/web/src/lib/native.ts),
         // para o site pedir a quem tem o app antigo que instale o novo.
-        versionCode 2
+        versionCode 3
         versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

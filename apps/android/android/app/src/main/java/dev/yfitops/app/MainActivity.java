@@ -22,6 +22,16 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
+     * O app fechou de vez (não só foi para o fundo): a música parou junto, então a
+     * notificação "tocando" sai também.
+     */
+    @Override
+    public void onDestroy() {
+        if (isFinishing()) stopService(new Intent(this, KeepAliveService.class));
+        super.onDestroy();
+    }
+
+    /**
      * Link compartilhado pelo menu "Compartilhar" (YouTube, Spotify...): abre a
      * tela de envio com o link no campo (o site lê ?share_text=, ver main.tsx).
      */

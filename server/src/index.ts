@@ -1511,18 +1511,25 @@ app.delete("/imports/:id", async (c) => {
 /**
  * Um celular pede trabalho (e avisa que está disponível). Responde com um link
  * para ler, uma música para baixar, ou nada (e quantos segundos esperar).
+ *
+ * `mineOnly` (nos dados móveis, com o app aberto): só os pedidos da própria
+ * pessoa. O celular não entra no revezamento nem baixa para os outros.
  */
 app.post("/spot/claim", async (c) => {
-  const device = checkDevice((await c.req.json<{ device: string }>()).device);
+  const body = await c.req.json<{ device: string; mineOnly?: boolean }>();
+  const device = checkDevice(body.device);
+  const mineOnly = body.mineOnly === true;
+  const userId = c.get("userId");
   const db = c.env.DB;
   const now = Date.now();
   const results = await db.batch([
+    // Só nos dados móveis, o celular não conta como disponível (last_seen = 0): a vez não para nele.
     db
       .prepare(
         `INSERT INTO import_devices (id, user_id, last_seen) VALUES (?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen, user_id = excluded.user_id`,
       )
-      .bind(device, c.get("userId"), now),
+      .bind(device, userId, mineOnly ? 0 : now),
     // Este celular está livre: o que ele tinha em mãos (o app fechou no meio) volta para a fila.
     db.prepare("UPDATE import_tracks SET status = 'queued', device = NULL, attempts = attempts + 1 WHERE status = 'working' AND device = ?").bind(device),
     // Downloads largados no meio por outros celulares voltam para a fila; depois de algumas tentativas, falham.
@@ -1550,13 +1557,29 @@ app.post("/spot/claim", async (c) => {
   // Ler um link é rápido e não baixa áudio: qualquer celular pega.
   const list = await db
     .prepare(
-      `UPDATE import_requests SET status = 'listing', device = ?, claimed_at = ?
-       WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' ORDER BY created_at LIMIT 1) AND status = 'queued'
+      `UPDATE import_requests SET status = 'listing', device = ?1, claimed_at = ?2
+       WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' AND (?3 = 0 OR user_id = ?4) ORDER BY created_at LIMIT 1)
+         AND status = 'queued'
        RETURNING id, url`,
     )
-    .bind(device, now)
+    .bind(device, now, mineOnly ? 1 : 0, userId)
     .first<{ id: string; url: string }>();
   if (list) return c.json({ job: { type: "list", id: list.id, url: list.url } satisfies SpotJob });
+
+  if (mineOnly) {
+    // Qualquer música do próprio pedido (curta ou longa), na ordem da lista.
+    const own = await db
+      .prepare(
+        `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+         WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
+                     WHERE t.status = 'queued' AND r.user_id = ? ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
+         RETURNING id, request_id AS requestId, meta`,
+      )
+      .bind(device, now, userId)
+      .first<{ id: string; requestId: string; meta: string }>();
+    if (!own) return c.json({ job: null, wait: 20 });
+    return c.json({ job: { type: "track", id: own.id, requestId: own.requestId, meta: JSON.parse(own.meta), mine: true } satisfies SpotJob });
+  }
 
   if (!(await db.prepare("SELECT 1 FROM import_tracks WHERE status = 'queued' LIMIT 1").first())) return c.json({ job: null, wait: 60 });
 
@@ -1570,7 +1593,7 @@ app.post("/spot/claim", async (c) => {
                    ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
        RETURNING id, request_id AS requestId, meta`,
     )
-    .bind(device, now, c.get("userId"))
+    .bind(device, now, userId)
     .first<{ id: string; requestId: string; meta: string }>();
   if (mine) return c.json({ job: { type: "track", id: mine.id, requestId: mine.requestId, meta: JSON.parse(mine.meta), mine: true } satisfies SpotJob });
 
@@ -1599,7 +1622,7 @@ app.post("/spot/claim", async (c) => {
   if (!track) return c.json({ job: null, wait: 15 });
   const owner = await db.prepare("SELECT user_id AS userId FROM import_requests WHERE id = ?").bind(track.requestId).first<{ userId: string }>();
   return c.json({
-    job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta), mine: owner?.userId === c.get("userId") } satisfies SpotJob,
+    job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta), mine: owner?.userId === userId } satisfies SpotJob,
   });
 });
 

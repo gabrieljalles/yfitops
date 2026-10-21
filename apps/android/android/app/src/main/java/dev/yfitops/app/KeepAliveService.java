@@ -185,9 +185,30 @@ public class KeepAliveService extends Service {
         if (KeepAlivePlugin.instance != null) KeepAlivePlugin.instance.emitAction(action);
     }
 
+    /**
+     * A pessoa fechou o app (arrastou para fora da lista de recentes): a música já
+     * parou junto com a tela, então a notificação e os controles do carro saem também.
+     * Sem isso, a notificação ficava "tocando" para sempre.
+     */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        shutdown();
+        super.onTaskRemoved(rootIntent);
+    }
+
+    /** Tira a notificação e para o serviço. */
+    void shutdown() {
+        if (session != null) session.setActive(false);
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
+        else stopForeground(true);
+        getSystemService(NotificationManager.class).cancel(ID);
+        stopSelf();
+    }
+
     @Override
     public void onDestroy() {
         if (instance == this) instance = null;
+        getSystemService(NotificationManager.class).cancel(ID);
         if (session != null) {
             session.setActive(false);
             session.release();

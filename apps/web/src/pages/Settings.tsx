@@ -364,7 +364,7 @@ function HelpSettings() {
               Este celular ajuda a baixar
               <small className="muted">
                 Todo app Android ajuda, só no Wi-Fi e com o app aberto ou tocando música. Baixa para quem pediu (pode ser outra pessoa): a música vai
-                só para o servidor e não fica neste celular nem entra na sua biblioteca.
+                só para o servidor e não fica neste celular nem entra na sua biblioteca. Nos dados móveis, com o app aberto, baixa só os seus pedidos.
               </small>
             </span>
           </div>

@@ -11,7 +11,7 @@ import { attempt, toast } from "./ui";
 //
 // O pedido vai para uma fila no servidor. Quem baixa é um celular Android com
 // o app aberto (ou tocando música) e no Wi-Fi — pode ser o seu ou o de outra
-// pessoa. Conforme as músicas ficam prontas, elas entram SÓ na sua biblioteca
+// pessoa. O seu também baixa os seus pedidos nos dados móveis, com o app aberto. Conforme as músicas ficam prontas, elas entram SÓ na sua biblioteca
 // (quem baixou não fica com elas). Era uma playlist? No fim, vira uma playlist
 // no app com o mesmo nome.
 // ---------------------------------------------------------------------------

@@ -15,10 +15,11 @@ import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from 
 //
 // Regras:
 //   - todo app Android ajuda (não há como desligar);
-//   - só no Wi-Fi (quem baixa para os outros não gasta dados móveis);
-//   - só com o app aberto na tela, ou tocando música (aí vale com a tela
-//     desligada). Pausou a música, ou saiu do app sem música: para na hora, e
-//     o que estava baixando volta para a fila;
+//   - no Wi-Fi: baixa para todo mundo, com o app aberto na tela ou tocando
+//     música (aí vale com a tela desligada). Pausou a música, ou saiu do app
+//     sem música: para na hora, e o que estava baixando volta para a fila;
+//   - nos dados móveis: só os pedidos da própria pessoa, e só com o app aberto
+//     na tela (quem baixa para os outros não gasta dados móveis);
 //   - revezam: quem acabou de baixar passa a vez (o servidor decide).
 // ---------------------------------------------------------------------------
 
@@ -54,14 +55,23 @@ class Stopped extends Error {}
 function blocker(): string {
   const s = sessionStore.get();
   if (!s || s.status === "pending") return "sem conta";
-  if (!wifi) return "só ajuda no Wi-Fi";
-  if (document.visibilityState !== "visible" && !playerStore.get().playing) return "só com o app aberto ou tocando música";
+  const visible = document.visibilityState === "visible";
+  if (!wifi && !visible) return "fora do Wi-Fi, só baixa os seus pedidos e com o app aberto";
+  if (!visible && !playerStore.get().playing) return "só com o app aberto ou tocando música";
   return "";
 }
 
-/** Para no meio se não puder mais (pausou, saiu do app, saiu do Wi-Fi). */
+/** Nos dados móveis: só os pedidos da própria pessoa. */
+const mineOnly = () => !wifi;
+
+/** O que este aparelho está baixando agora (para saber se é pedido seu). */
+let current: SpotJob | null = null;
+
+/** Para no meio se não puder mais (pausou, saiu do app, saiu do Wi-Fi com pedido de outra pessoa). */
 function check() {
   if (blocker()) throw new Stopped();
+  // Ler um link é só texto: termina mesmo que o Wi-Fi caia no meio.
+  if (mineOnly() && current?.type === "track" && !current.mine) throw new Stopped();
 }
 
 function schedule(ms: number) {
@@ -92,11 +102,12 @@ async function tick() {
   try {
     const res = await api.json<{ job: SpotJob | null; wait?: number; resting?: boolean }>("/spot/claim", {
       method: "POST",
-      json: { device: deviceId() },
+      json: { device: deviceId(), mineOnly: mineOnly() },
     });
     announced = true;
     patch({ resting: !!res.resting });
     if (res.job) {
+      current = res.job;
       await work(res.job);
       // Acabou: pede de novo logo (o servidor passa a vez se houver outro celular).
       next = 1_000;
@@ -108,6 +119,7 @@ async function tick() {
     }
   } finally {
     running = false;
+    current = null;
     holdAwake(false);
     patch({ doing: "" });
     if (blocker() && announced) void leave();
