@@ -37,6 +37,18 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Celular ajudante: o celular ligou ou o app foi atualizado; abre o app de novo. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -61,4 +73,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Celular ajudante (24 horas): pede para o Android não economizar bateria com o app. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Celular ajudante: abre sozinho quando o celular liga ou quando o Android fecha o app. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 </manifest>

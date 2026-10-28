@@ -23,11 +23,14 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * O app fechou de vez (não só foi para o fundo): a música parou junto, então a
-     * notificação "tocando" sai também.
+     * notificação "tocando" sai também. No celular ajudante, abre de novo.
      */
     @Override
     public void onDestroy() {
-        if (isFinishing()) stopService(new Intent(this, KeepAliveService.class));
+        if (isFinishing()) {
+            if (Helper.isOn(this)) Helper.launch(getApplicationContext());
+            else stopService(new Intent(this, KeepAliveService.class));
+        }
         super.onDestroy();
     }
 

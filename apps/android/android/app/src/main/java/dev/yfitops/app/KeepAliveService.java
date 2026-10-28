@@ -49,6 +49,8 @@ public class KeepAliveService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        // O Android pode recriar o serviço sozinho (depois de fechar o app por falta de memória).
+        helper = Helper.isOn(this);
         session = new MediaSessionCompat(this, "Yfitops");
         session.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -112,6 +114,10 @@ public class KeepAliveService extends Service {
             channel.setShowBadge(false);
             nm.createNotificationChannel(channel);
         }
+        if (intent == null && helper) {
+            // Recriado pelo Android: o app tinha sido fechado. Abre de novo (a página religa o ajudante).
+            Helper.launch(this);
+        }
         if (intent != null && intent.hasExtra("helper")) {
             // Liga ou desliga o modo ajudante; a música (se houver) continua como está.
             helper = intent.getBooleanExtra("helper", false);
@@ -136,7 +142,8 @@ public class KeepAliveService extends Service {
         Notification n = buildNotification();
         if (Build.VERSION.SDK_INT >= 29) startForeground(ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         else startForeground(ID, n);
-        return START_NOT_STICKY;
+        // Celular ajudante: se o Android fechar o serviço, ele mesmo o recria.
+        return helper ? START_STICKY : START_NOT_STICKY;
     }
 
     /** Música, tocando/pausada e posição (segundos), vindos do app. */
@@ -232,7 +239,9 @@ public class KeepAliveService extends Service {
      */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        shutdown();
+        // Celular ajudante: abre de novo (para desligar, é a chave em Ajustes).
+        if (helper) Helper.launch(this);
+        else shutdown();
         super.onTaskRemoved(rootIntent);
     }
 

@@ -120,6 +120,12 @@ const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
  */
 export const NATIVE_BUILD = 4;
 
+/**
+ * Desde este build, o celular ajudante abre sozinho quando o celular liga. Não
+ * obriga ninguém a atualizar (só quem é ajudante precisa): Ajustes avisa.
+ */
+export const HELPER_REOPENS_BUILD = 5;
+
 /** Versão do app Android instalado (0 = não é o app; 1 = app antigo, sem `version`). */
 export async function nativeBuild(): Promise<number> {
   if (!isNativeApp()) return 0;

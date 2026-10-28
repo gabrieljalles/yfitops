@@ -5,13 +5,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
-import android.provider.Settings;
 import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -120,6 +118,7 @@ public class KeepAlivePlugin extends Plugin {
     public void helper(PluginCall call) {
         boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
         helper = on;
+        Helper.set(getContext(), on);
         Intent intent = new Intent(getContext(), KeepAliveService.class).putExtra("helper", on);
         try {
             if (on) {
@@ -134,22 +133,9 @@ public class KeepAlivePlugin extends Plugin {
         lock(on, 0);
         WebView web = getBridge().getWebView();
         if (Build.VERSION.SDK_INT >= 26) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !on));
-        if (on) askBattery();
+        // Bateria sem economia e "aparecer sobre outros apps" (para abrir sozinho).
+        if (on) Helper.askMissing(getContext());
         call.resolve();
-    }
-
-    /** Pede para o Android não colocar o app para dormir (só se ainda não deixou). */
-    private void askBattery() {
-        Context ctx = getContext();
-        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
-        if (pm.isIgnoringBatteryOptimizations(ctx.getPackageName())) return;
-        try {
-            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + ctx.getPackageName()));
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(i);
-        } catch (Exception e) {
-            // Alguns celulares não têm essa tela: segue sem.
-        }
     }
 
     /** Download da fila em andamento: Wi-Fi e processador acordados (no máximo 15 min por vez). */
