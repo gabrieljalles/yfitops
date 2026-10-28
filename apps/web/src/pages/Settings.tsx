@@ -23,7 +23,7 @@ import { askNotifyPermission, notifyPermission } from "../lib/notify";
 import { canCrossfade, stop } from "../lib/player";
 import { prefsStore, setPref } from "../lib/prefs";
 import { isAndroidBrowser } from "../lib/native";
-import { spotStore } from "../lib/spot";
+import { setHelper, spotStore } from "../lib/spot";
 import { StorageBar } from "../components/StorageBar";
 import { logout, refreshAccount, sessionStore } from "../lib/session";
 import { formatBytes } from "../lib/tracks";
@@ -354,6 +354,7 @@ function Segmented<T extends string>({
  */
 function HelpSettings() {
   const spot = useStore(spotStore);
+  const admin = !!useStore(sessionStore)?.admin;
   return (
     <section>
       <h2>Baixar músicas pedidas por link</h2>
@@ -368,6 +369,19 @@ function HelpSettings() {
               </small>
             </span>
           </div>
+          {(admin || spot.helper) && (
+            <label className="setting-row">
+              <span>
+                Celular ajudante (24 horas)
+                <small className="muted">
+                  Para um celular que fica só para isso, ligado no carregador e no Wi-Fi: baixa os pedidos de todo mundo o tempo todo,
+                  com a tela desligada e sem música. Depois de ligar, deixe o app aberto (pode apagar a tela) e, se o celular reiniciar,
+                  abra o app de novo.
+                </small>
+              </span>
+              <input type="checkbox" className="switch" checked={spot.helper} onChange={(e) => setHelper(e.target.checked)} />
+            </label>
+          )}
           <p className="muted small" role="status">
             {spot.resting
               ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."

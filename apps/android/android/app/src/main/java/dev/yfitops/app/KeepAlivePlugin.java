@@ -5,11 +5,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.Settings;
+import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.pm.PackageInfoCompat;
@@ -32,6 +35,8 @@ public class KeepAlivePlugin extends Plugin {
     private WifiManager.WifiLock wifiLock;
     private PowerManager.WakeLock wakeLock;
     private boolean askedNotifications = false;
+    /** Celular ajudante ligado: Wi-Fi e processador acordados o tempo todo. */
+    private boolean helper = false;
 
     @Override
     public void load() {
@@ -100,8 +105,51 @@ public class KeepAlivePlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
-        getContext().stopService(new Intent(getContext(), KeepAliveService.class));
+        KeepAliveService service = KeepAliveService.instance;
+        if (helper && service != null) new Handler(Looper.getMainLooper()).post(service::clearMedia);
+        else getContext().stopService(new Intent(getContext(), KeepAliveService.class));
         call.resolve();
+    }
+
+    /**
+     * Celular ajudante (24 horas, desde o build 4): ajuda a fila mesmo sem música e
+     * com a tela desligada. Segura o Wi-Fi e o processador acordados, mantém a página
+     * com prioridade alta e pede para o Android não economizar bateria com o app.
+     */
+    @PluginMethod
+    public void helper(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        helper = on;
+        Intent intent = new Intent(getContext(), KeepAliveService.class).putExtra("helper", on);
+        try {
+            if (on) {
+                askNotifications();
+                ContextCompat.startForegroundService(getContext(), intent);
+            } else if (KeepAliveService.instance != null) {
+                getContext().startService(intent);
+            }
+        } catch (Exception e) {
+            // O sistema pode recusar (app em segundo plano): tenta de novo quando o app abrir.
+        }
+        lock(on, 0);
+        WebView web = getBridge().getWebView();
+        if (Build.VERSION.SDK_INT >= 26) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !on));
+        if (on) askBattery();
+        call.resolve();
+    }
+
+    /** Pede para o Android não colocar o app para dormir (só se ainda não deixou). */
+    private void askBattery() {
+        Context ctx = getContext();
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        if (pm.isIgnoringBatteryOptimizations(ctx.getPackageName())) return;
+        try {
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + ctx.getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(i);
+        } catch (Exception e) {
+            // Alguns celulares não têm essa tela: segue sem.
+        }
     }
 
     /** Download da fila em andamento: Wi-Fi e processador acordados (no máximo 15 min por vez). */
@@ -109,6 +157,14 @@ public class KeepAlivePlugin extends Plugin {
     @SuppressWarnings("deprecation")
     public void busy(PluginCall call) {
         boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        // No modo ajudante os dois já ficam acordados o tempo todo.
+        if (!helper) lock(on, 15 * 60 * 1000L);
+        call.resolve();
+    }
+
+    /** Wi-Fi e processador acordados (timeout 0 = até desligar). */
+    @SuppressWarnings("deprecation")
+    private void lock(boolean on, long timeout) {
         Context ctx = getContext().getApplicationContext();
         if (on) {
             if (wakeLock == null) {
@@ -121,13 +177,13 @@ public class KeepAlivePlugin extends Plugin {
                 wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "yfitops:download");
                 wifiLock.setReferenceCounted(false);
             }
-            wakeLock.acquire(15 * 60 * 1000L);
+            if (timeout > 0) wakeLock.acquire(timeout);
+            else wakeLock.acquire();
             wifiLock.acquire();
         } else {
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
             if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         }
-        call.resolve();
     }
 
     void emitAction(String action) {

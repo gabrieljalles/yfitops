@@ -106,6 +106,8 @@ interface KeepAlivePlugin {
   stop(): Promise<void>;
   /** Segura o Wi-Fi e o processador acordados durante um download. */
   busy(opts: { on: boolean }): Promise<void>;
+  /** Celular ajudante (24 horas): app vivo, Wi-Fi e processador acordados mesmo sem música. Desde o build 4. */
+  helper(opts: { on: boolean }): Promise<void>;
   /** "play", "pause", "next", "prev" ou "seek:<segundos>" (notificação, carro, fone, tela bloqueada). */
   addListener(event: "action", cb: (e: { action: string }) => void): Promise<{ remove: () => Promise<void> }>;
 }
@@ -116,7 +118,7 @@ const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
  * Versão do app Android que o site espera. Suba junto com o versionCode do APK
  * quando a parte nativa mudar: quem tiver um app mais antigo é avisado para instalar o novo.
  */
-export const NATIVE_BUILD = 3;
+export const NATIVE_BUILD = 4;
 
 /** Versão do app Android instalado (0 = não é o app; 1 = app antigo, sem `version`). */
 export async function nativeBuild(): Promise<number> {
@@ -162,6 +164,12 @@ export function onNativeAction(cb: (action: string) => void) {
 export function holdAwake(on: boolean) {
   if (!isNativeApp()) return;
   void KeepAlive.busy({ on }).catch(() => {});
+}
+
+/** Liga ou desliga o modo "celular ajudante" na parte nativa (app antigo: não faz nada). */
+export function nativeHelper(on: boolean) {
+  if (!isNativeApp()) return;
+  void KeepAlive.helper({ on }).catch(() => {});
 }
 
 /** Identificação deste aparelho na fila (fica guardada; não diz nada sobre a pessoa). */

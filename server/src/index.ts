@@ -1514,11 +1514,14 @@ app.delete("/imports/:id", async (c) => {
  *
  * `mineOnly` (nos dados móveis, com o app aberto): só os pedidos da própria
  * pessoa. O celular não entra no revezamento nem baixa para os outros.
+ * `helper` (celular ajudante, 24 horas): não pega as músicas longas da própria
+ * conta, que ficam no celular de quem pediu (o principal).
  */
 app.post("/spot/claim", async (c) => {
-  const body = await c.req.json<{ device: string; mineOnly?: boolean }>();
+  const body = await c.req.json<{ device: string; mineOnly?: boolean; helper?: boolean }>();
   const device = checkDevice(body.device);
   const mineOnly = body.mineOnly === true;
+  const helper = body.helper === true;
   const userId = c.get("userId");
   const db = c.env.DB;
   const now = Date.now();
@@ -1585,7 +1588,7 @@ app.post("/spot/claim", async (c) => {
 
   // Mais de 13 minutos não vai para o servidor: só o celular de quem pediu baixa (e fica com ela).
   // Ele pega na hora, sem esperar a vez: nenhum outro celular pode baixar essa.
-  const mine = await db
+  const mine = helper ? null : await db
     .prepare(
       `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id

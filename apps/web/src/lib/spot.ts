@@ -4,7 +4,7 @@ import { artistFromChannel, splitArtistTitle } from "./artist";
 import { findInCatalog } from "./catalog";
 import { makeCover, publishForQueue } from "./importer";
 import { addLocalTrack, getTrack } from "./library";
-import { canSpot, deviceId, holdAwake, nowPlaying, onNativeAction, onWifi, watchNetwork } from "./native";
+import { canSpot, deviceId, holdAwake, nativeHelper, nowPlaying, onNativeAction, onWifi, watchNetwork } from "./native";
 import { createStore } from "./observable";
 import { currentTrackId, next, playerStore, prev, seek, toggle } from "./player";
 import { sessionStore } from "./session";
@@ -20,6 +20,9 @@ import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from 
 //     sem música: para na hora, e o que estava baixando volta para a fila;
 //   - nos dados móveis: só os pedidos da própria pessoa, e só com o app aberto
 //     na tela (quem baixa para os outros não gasta dados móveis);
+//   - celular ajudante (ligado em Ajustes, só pelo administrador): baixa o
+//     tempo todo no Wi-Fi, com a tela desligada e sem música. Ele não fica com
+//     as músicas longas da própria conta (essas vão para o celular principal);
 //   - revezam: quem acabou de baixar passa a vez (o servidor decide).
 // ---------------------------------------------------------------------------
 
@@ -36,9 +39,22 @@ export interface SpotState {
   done: number;
   /** O YouTube barrou este aparelho: ele descansa e os outros seguem. */
   resting: boolean;
+  /** Celular ajudante: baixa 24 horas, com a tela desligada e sem música. */
+  helper: boolean;
 }
 
-export const spotStore = createStore<SpotState>({ capable: false, active: false, reason: "", doing: "", done: 0, resting: false });
+/** Guardado neste aparelho: é o celular ajudante. */
+const HELPER_KEY = "yfitops.helper";
+
+function savedHelper(): boolean {
+  try {
+    return localStorage.getItem(HELPER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export const spotStore = createStore<SpotState>({ capable: false, active: false, reason: "", doing: "", done: 0, resting: false, helper: savedHelper() });
 const patch = (p: Partial<SpotState>) => spotStore.set((s) => ({ ...s, ...p }));
 
 let wifi = false;
@@ -56,9 +72,23 @@ function blocker(): string {
   const s = sessionStore.get();
   if (!s || s.status === "pending") return "sem conta";
   const visible = document.visibilityState === "visible";
+  if (spotStore.get().helper && wifi) return "";
   if (!wifi && !visible) return "fora do Wi-Fi, só baixa os seus pedidos e com o app aberto";
   if (!visible && !playerStore.get().playing) return "só com o app aberto ou tocando música";
   return "";
+}
+
+/** Liga ou desliga o modo "celular ajudante" neste aparelho. */
+export function setHelper(on: boolean) {
+  try {
+    if (on) localStorage.setItem(HELPER_KEY, "1");
+    else localStorage.removeItem(HELPER_KEY);
+  } catch {
+    /* sem armazenamento: vale até fechar o app */
+  }
+  patch({ helper: on });
+  nativeHelper(on);
+  kick();
 }
 
 /** Nos dados móveis: só os pedidos da própria pessoa. */
@@ -102,7 +132,7 @@ async function tick() {
   try {
     const res = await api.json<{ job: SpotJob | null; wait?: number; resting?: boolean }>("/spot/claim", {
       method: "POST",
-      json: { device: deviceId(), mineOnly: mineOnly() },
+      json: { device: deviceId(), mineOnly: mineOnly(), helper: spotStore.get().helper },
     });
     announced = true;
     patch({ resting: !!res.resting });
@@ -186,11 +216,13 @@ async function work(job: SpotJob) {
     patch({ doing: `baixando "${label}"` });
     const dl = await downloadAudio(t.videoId);
     check();
-    // Mais de 13 minutos não vai para o servidor. Se o pedido é de outra pessoa, este
-    // celular não fica com ela: volta para a fila, para o celular de quem pediu.
+    // Mais de 13 minutos não vai para o servidor. Se o pedido é de outra pessoa (ou este
+    // é o celular ajudante), este celular não fica com ela: volta para a fila, para o
+    // celular de quem pediu.
     const seconds = dl.duration || t.duration;
     const tooLong = seconds > MAX_SONG_SECONDS;
-    if (tooLong && !job.mine) return await report(`/spot/track/${job.id}`, { device, tooLong: true, duration: seconds });
+    const keep = job.mine && !spotStore.get().helper;
+    if (tooLong && !keep) return await report(`/spot/track/${job.id}`, { device, tooLong: true, duration: seconds });
     // Do Spotify/Deezer ficam o título e o artista de lá (mais limpos). Do YouTube:
     // "Artista - Título" no nome do vídeo; senão o canal, se for oficial ("- Topic", VEVO).
     if (!t.query || !t.artist) {
@@ -254,6 +286,7 @@ export function startSpot() {
   if (started || !canSpot()) return;
   started = true;
   patch({ capable: true });
+  if (spotStore.get().helper) nativeHelper(true);
   const refreshWifi = () =>
     void onWifi().then((w) => {
       wifi = w;

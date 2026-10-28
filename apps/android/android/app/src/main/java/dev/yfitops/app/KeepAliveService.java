@@ -40,6 +40,10 @@ public class KeepAliveService extends Service {
     private boolean playing = true;
     private long positionMs = 0;
     private long durationMs = 0;
+    /** Celular ajudante (24 horas): o serviço fica ligado mesmo sem música. */
+    private boolean helper = false;
+    /** Tem música na fila (senão, no modo ajudante, a notificação diz "ajudando"). */
+    private boolean media = false;
 
     @Override
     public void onCreate() {
@@ -81,7 +85,6 @@ public class KeepAliveService extends Service {
         if (open != null) {
             session.setSessionActivity(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         }
-        session.setActive(true);
     }
 
     @Override
@@ -109,7 +112,15 @@ public class KeepAliveService extends Service {
             channel.setShowBadge(false);
             nm.createNotificationChannel(channel);
         }
-        if (intent != null) {
+        if (intent != null && intent.hasExtra("helper")) {
+            // Liga ou desliga o modo ajudante; a música (se houver) continua como está.
+            helper = intent.getBooleanExtra("helper", false);
+            if (!helper && !media) {
+                shutdown();
+                return START_NOT_STICKY;
+            }
+        } else if (intent != null) {
+            media = true;
             String t = intent.getStringExtra("title");
             if (t != null && !t.isEmpty()) title = t;
             // Apps antigos mandavam o artista como "text".
@@ -130,6 +141,7 @@ public class KeepAliveService extends Service {
 
     /** Música, tocando/pausada e posição (segundos), vindos do app. */
     void update(String title, String artist, String album, boolean playing, double position, double duration) {
+        this.media = true;
         this.title = title == null || title.isEmpty() ? "Yfitops" : title;
         this.artist = artist == null ? "" : artist;
         this.album = album == null ? "" : album;
@@ -140,7 +152,24 @@ public class KeepAliveService extends Service {
         getSystemService(NotificationManager.class).notify(ID, buildNotification());
     }
 
+    /**
+     * A música parou de vez. No modo ajudante o serviço continua (com a notificação
+     * "ajudando"); senão, sai tudo.
+     */
+    void clearMedia() {
+        media = false;
+        if (!helper) {
+            shutdown();
+            return;
+        }
+        applySession();
+        getSystemService(NotificationManager.class).notify(ID, buildNotification());
+    }
+
     private void applySession() {
+        // Sem música, o Yfitops não se apresenta como player (o carro não o mostra).
+        session.setActive(media);
+        if (!media) return;
         session.setMetadata(new MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
@@ -163,6 +192,17 @@ public class KeepAliveService extends Service {
     private Notification buildNotification() {
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent openPi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        if (!media) {
+            return new NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_vinyl)
+                .setContentTitle("Celular ajudante")
+                .setContentText("Baixando as músicas pedidas, 24 horas")
+                .setContentIntent(openPi)
+                .setOngoing(true)
+                .setSilent(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .build();
+        }
         return new NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_vinyl)
             .setContentTitle(title)

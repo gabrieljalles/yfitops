@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NATIVE_BUILD, nativeBuild } from "../lib/native";
+import { spotStore } from "../lib/spot";
 import { Vinyl } from "./Cover";
 
 /** Versão deste app (gerada no build; vite.config.ts). */
@@ -44,6 +45,19 @@ export function UpdatePrompt() {
       window.removeEventListener("online", onVisible);
     };
   }, []);
+
+  // Celular ajudante: ninguém vai tocar no aviso. Recarrega sozinho assim que não
+  // estiver baixando nada (o que estava na mão volta para a fila de qualquer jeito).
+  useEffect(() => {
+    if (!outdated) return;
+    const tryReload = () => {
+      const s = spotStore.get();
+      if (s.helper && !s.doing) location.reload();
+    };
+    tryReload();
+    const stop = spotStore.subscribe(tryReload);
+    return () => void stop();
+  }, [outdated]);
 
   if (!outdated) return null;
   return (
