@@ -1550,7 +1550,7 @@ app.post("/spot/claim", async (c) => {
       .prepare(
         `UPDATE import_tracks SET device = NULL, attempts = attempts + 1,
            status = CASE WHEN attempts + 1 >= ?1 THEN 'failed' ELSE 'queued' END,
-           error = CASE WHEN attempts + 1 >= ?1 THEN 'Nenhum celular conseguiu terminar o download' ELSE error END
+           error = CASE WHEN attempts + 1 >= ?1 THEN 'Não deu para baixar agora. Tente de novo mais tarde.' ELSE error END
          WHERE status = 'working' AND claimed_at < ?2`,
       )
       .bind(SPOT_ATTEMPTS, now - SPOT_STALE),
@@ -1558,7 +1558,7 @@ app.post("/spot/claim", async (c) => {
       .prepare(
         `UPDATE import_requests SET device = NULL, attempts = attempts + 1,
            status = CASE WHEN attempts + 1 >= ?1 THEN 'failed' ELSE 'queued' END,
-           error = CASE WHEN attempts + 1 >= ?1 THEN 'Nenhum celular conseguiu ler o link' ELSE error END
+           error = CASE WHEN attempts + 1 >= ?1 THEN 'Não deu para ler o link agora. Tente de novo mais tarde.' ELSE error END
          WHERE status = 'listing' AND (claimed_at < ?2 OR device = ?3)`,
       )
       .bind(SPOT_ATTEMPTS, now - SPOT_STALE, device),

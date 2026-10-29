@@ -22,7 +22,7 @@ import { useStore } from "../lib/observable";
 import { askNotifyPermission, notifyPermission } from "../lib/notify";
 import { canCrossfade, stop } from "../lib/player";
 import { prefsStore, setPref } from "../lib/prefs";
-import { HELPER_REOPENS_BUILD, isAndroidBrowser, nativeBuild } from "../lib/native";
+import { HELPER_REOPENS_BUILD, nativeBuild } from "../lib/native";
 import { setHelper, spotStore } from "../lib/spot";
 import { StorageBar } from "../components/StorageBar";
 import { logout, refreshAccount, sessionStore } from "../lib/session";
@@ -350,64 +350,51 @@ function Segmented<T extends string>({
 /**
  * Ajudar a baixar as músicas pedidas por link. Só o app Android consegue (o
  * navegador não deixa um site baixar do YouTube), e só no Wi-Fi. Todo app
- * Android ajuda: não há como desligar.
+ * Android ajuda: não há como desligar. Nos outros aparelhos a seção não aparece
+ * (quem só pede não precisa saber como a música é baixada).
  */
 function HelpSettings() {
   const spot = useStore(spotStore);
   const admin = !!useStore(sessionStore)?.admin;
   const [build, setBuild] = useState(0);
   useEffect(() => void nativeBuild().then(setBuild), []);
+  if (!spot.capable) return null;
   return (
     <section>
       <h2>Baixar músicas pedidas por link</h2>
-      {spot.capable ? (
-        <>
-          <div className="setting-row">
-            <span>
-              Este celular ajuda a baixar
-              <small className="muted">
-                Todo app Android ajuda, só no Wi-Fi e com o app aberto ou tocando música. Baixa para quem pediu (pode ser outra pessoa): a música vai
-                só para o servidor e não fica neste celular nem entra na sua biblioteca. Nos dados móveis, com o app aberto, baixa só os seus pedidos.
-              </small>
-            </span>
-          </div>
-          {(admin || spot.helper) && (
-            <label className="setting-row">
-              <span>
-                Celular ajudante (24 horas)
-                <small className="muted">
-                  Para um celular que fica só para isso, ligado no carregador e no Wi-Fi: baixa os pedidos de todo mundo o tempo todo,
-                  com a tela desligada e sem música. Ao ligar, aceite as duas permissões que o Android pedir (bateria e "aparecer sobre
-                  outros apps"): com elas o app abre sozinho quando o celular liga ou quando é fechado.
-                </small>
-              </span>
-              <input type="checkbox" className="switch" checked={spot.helper} onChange={(e) => setHelper(e.target.checked)} />
-            </label>
-          )}
-          {spot.helper && build > 0 && build < HELPER_REOPENS_BUILD && (
-            <p className="muted small">
-              Para o app abrir sozinho quando o celular ligar, <a href={`http://${location.host}/api/app/apk`}>instale o app novo</a> por cima.
-            </p>
-          )}
-          <p className="muted small" role="status">
-            {spot.resting
-              ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."
-              : spot.active
-                ? `${spot.doing ? `Agora: ${spot.doing}.` : "Pronto para ajudar: esperando pedidos."}${spot.done ? ` Já baixou ${spot.done} música(s) desde que o app abriu.` : ""}`
-                : `Parado: ${spot.reason}.`}
-          </p>
-        </>
-      ) : isAndroidBrowser() ? (
+      <div className="setting-row">
+        <span>
+          Este celular ajuda a baixar
+          <small className="muted">
+            No Wi-Fi, com o app aberto ou tocando música. Nos dados móveis, só os seus pedidos.
+          </small>
+        </span>
+      </div>
+      {(admin || spot.helper) && (
+        <label className="setting-row">
+          <span>
+            Celular ajudante (24 horas)
+            <small className="muted">
+              Para um celular que fica só para isso, ligado no carregador e no Wi-Fi: baixa os pedidos de todo mundo o tempo todo,
+              com a tela desligada e sem música. Ao ligar, aceite as duas permissões que o Android pedir (bateria e "aparecer sobre
+              outros apps"): com elas o app abre sozinho quando o celular liga ou quando é fechado.
+            </small>
+          </span>
+          <input type="checkbox" className="switch" checked={spot.helper} onChange={(e) => setHelper(e.target.checked)} />
+        </label>
+      )}
+      {spot.helper && build > 0 && build < HELPER_REOPENS_BUILD && (
         <p className="muted small">
-          Quem baixa as músicas pedidas por link são celulares Android com o app do yfitops. Instale o app para o seu celular ajudar
-          (só no Wi-Fi): <a href="/yfitops.apk" download>baixar o app Android</a>. Depois de instalar, abra pelo ícone novo.
-        </p>
-      ) : (
-        <p className="muted small">
-          Quem baixa as músicas pedidas por link são celulares Android com o app do yfitops, abertos e no Wi-Fi. Este aparelho só pede:
-          os pedidos ficam na fila até um desses celulares pegar.
+          Para o app abrir sozinho quando o celular ligar, <a href={`http://${location.host}/api/app/apk`}>instale o app novo</a> por cima.
         </p>
       )}
+      <p className="muted small" role="status">
+        {spot.resting
+          ? "O YouTube pediu uma pausa a este celular. Ele volta a ajudar sozinho em até 30 minutos; enquanto isso, outros celulares seguem."
+          : spot.active
+            ? `${spot.doing ? `Agora: ${spot.doing}.` : "Pronto para ajudar: esperando pedidos."}${spot.done ? ` Já baixou ${spot.done} música(s) desde que o app abriu.` : ""}`
+            : `Parado: ${spot.reason}.`}
+      </p>
     </section>
   );
 }

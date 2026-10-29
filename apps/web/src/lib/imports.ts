@@ -313,14 +313,12 @@ export function requestStage(r: ImportRequestInfo, helpers: number): { label: st
   const working = r.status === "listing" || r.tracks.some((t) => t.status === "working");
   if (working) {
     const pct = requestPercent(r);
-    return { label: pct >= 75 ? "Quase pronta" : "Baixando", hint: "Um celular ajudante está trazendo a música para você.", working: true };
+    return { label: pct >= 75 ? "Quase pronta" : "Baixando", hint: "Sua música está sendo baixada.", working: true };
   }
   if (!finished(r))
     return {
       label: "Na fila",
-      hint: helpers
-        ? "Já já um celular ajudante começa a baixar."
-        : "Esperando um celular ajudante ficar livre. Pode fechar o app: a música chega sozinha.",
+      hint: helpers ? "Sua música vai começar a baixar em instantes." : "Sua música vai baixar em breve. Pode fechar o app: ela chega sozinha.",
       working: false,
     };
   return { label: "Pronta", hint: "Já está na sua biblioteca.", working: false };
