@@ -25,8 +25,15 @@ function element(): HTMLAudioElement {
   audio.preload = "none";
   audio.addEventListener("ended", () => previewStore.set({ id: null, loading: false }));
   audio.addEventListener("playing", () => previewStore.set((s) => ({ ...s, loading: false })));
-  // A música voltou a tocar: a prévia para.
-  playerStore.subscribe(() => playerStore.get().playing && previewStore.get().id && stopPreview());
+  // A música voltou a tocar (estava pausada e passou a tocar): a prévia para. Só na
+  // virada: logo depois do pause() que a prévia pede, o player ainda diz "tocando"
+  // por um instante, e isso não pode desligar a prévia que acabou de começar.
+  let wasPlaying = playerStore.get().playing;
+  playerStore.subscribe(() => {
+    const playing = playerStore.get().playing;
+    if (playing && !wasPlaying && previewStore.get().id) stopPreview();
+    wasPlaying = playing;
+  });
   return audio;
 }
 

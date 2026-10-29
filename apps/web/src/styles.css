@@ -2661,37 +2661,79 @@ li.previewing .hit-play {
   font-size: 0.9rem;
   font-weight: 600;
 }
-/* Parecidos: pílulas com a foto do artista. */
-.artist-pills {
+/* Parecidos: discos de vinil com a foto do artista no rótulo, rolando para o lado. */
+.artist-discs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  gap: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -28px;
+  padding: 2px 28px 4px;
 }
-.artist-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  border-radius: 99px;
-  padding: 3px 12px 3px 3px;
-  font-size: 0.82rem;
+.artist-discs::-webkit-scrollbar {
+  display: none;
 }
-.artist-pill img,
-.artist-pill-blank {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  object-fit: cover;
-  background: var(--surface-2);
+.artist-disc {
   flex: none;
+  width: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
 }
-.artist-pill.on {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+.artist-disc-vinyl {
+  width: 84px;
+  height: 84px;
+  display: block;
+  transition: transform 0.25s;
 }
+.artist-disc:hover .artist-disc-vinyl,
+.artist-disc:focus-visible .artist-disc-vinyl {
+  transform: rotate(25deg);
+}
+.artist-disc-name {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Pôster tocando a prévia: um vinil pequeno girando no canto. */
+.poster-disc {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+  animation: poster-disc-in 0.3s ease-out;
+}
+@keyframes poster-disc-in {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .poster-disc,
+  .artist-disc-vinyl {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Dica embaixo do campo do Descobrir (some quando a pessoa digita). */
+.link-hint {
+  flex-basis: 100%;
+}
+
 @media (max-width: 720px) {
-  .posters {
+  .posters,
+  .artist-discs {
     margin: 0 -16px;
     padding: 2px 16px 4px;
     scroll-padding-inline: 16px;

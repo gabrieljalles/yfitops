@@ -130,7 +130,7 @@ try {
   const desk = await (await pc.newContext({ viewport: { width: 1200, height: 800 } })).newPage();
   await signup(desk, `pede-${run}@teste.com`, URL);
   await desk.goto(URL + "#/descobrir");
-  await desk.getByPlaceholder("Nome da música ou link").fill(LINK);
+  await desk.getByPlaceholder("Nome da música ou link da playlist").fill(LINK);
   await desk.locator(".link-import").getByRole("button", { name: "pedir", exact: true }).click();
   // Álbum/playlist pergunta se cria a playlist; vídeo único vai direto.
   const asPlaylist = desk.getByRole("button", { name: "pedir e criar a playlist" });

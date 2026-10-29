@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { BlobRef } from "@yfitops/core";
 import { coverUrl } from "../lib/blobs";
 import { dominantColor } from "../lib/color";
@@ -16,6 +16,7 @@ export function Vinyl({
   label,
   groove,
   mini,
+  image,
 }: {
   seed: string;
   spinning?: boolean;
@@ -25,8 +26,12 @@ export function Vinyl({
   groove?: string;
   /** Versão de ícone: menos sulcos e rótulo maior, para a cor aparecer em tamanhos pequenos. */
   mini?: boolean;
+  /** Foto no rótulo (ex.: o artista nos "parecidos"), no lugar da cor; o rótulo fica maior. */
+  image?: string;
 }) {
   const h = hue(seed);
+  const clip = useId();
+  const r = image ? 30 : mini ? 26 : 17;
   return (
     <svg viewBox="0 0 100 100" className={`vinyl${spinning ? " spin" : ""}`} aria-hidden="true">
       <circle cx="50" cy="50" r="49" fill="var(--vinyl)" />
@@ -35,7 +40,15 @@ export function Vinyl({
       ))}
       <path d="M50 8 A42 42 0 0 1 86 30" fill="none" stroke="var(--vinyl-shine)" strokeWidth="2" strokeLinecap="round" />
       {/* style (e não o atributo fill), pois atributos de SVG não resolvem var(--…) */}
-      <circle cx="50" cy="50" r={mini ? 26 : 17} style={{ fill: label ?? `hsl(${h} 38% 72%)` }} />
+      <circle cx="50" cy="50" r={r} style={{ fill: label ?? `hsl(${h} 38% 72%)` }} />
+      {image && (
+        <>
+          <clipPath id={clip}>
+            <circle cx="50" cy="50" r={r} />
+          </clipPath>
+          <image href={image} x={50 - r} y={50 - r} width={r * 2} height={r * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clip})`} />
+        </>
+      )}
       <circle cx="50" cy="50" r={mini ? 4 : 2.2} style={{ fill: "var(--bg)" }} />
     </svg>
   );

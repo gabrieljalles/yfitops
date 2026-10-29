@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DiscoverArtist, ImportRequestInfo, ImportTrackStatus, TrackSearchHit } from "@yfitops/core";
+import { Vinyl } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/api";
 import { libraryStore, type Library } from "../lib/library";
@@ -27,6 +28,7 @@ import {
   requestStage,
   requestTrack,
   retryRequest,
+  searchTracks,
   serviceName,
   setImportLink,
   setImportTags,
@@ -52,6 +54,8 @@ function SpotifyLimit() {
  * músicas novas (as paradas do Deezer e "porque você ouve...").
  */
 export function DiscoverPage() {
+  // Saiu do Descobrir: na próxima vez, sorteia outro artista para o "Porque você ouve".
+  useEffect(() => () => void (pickedArtist = null), []);
   // Vem de um store (e não de useState) para sobreviver à troca de tela.
   const { link, sending, error: linkError, ask, pick, tags, requests, results, resultsFor, searching, requested, arrived } = useStore(importsStore);
   const asking = !!pick || ask;
@@ -85,7 +89,7 @@ export function DiscoverPage() {
             spellCheck={false}
             aria-label="Link ou nome da música"
             value={link}
-            placeholder="Nome da música ou link"
+            placeholder="Nome da música ou link da playlist"
             disabled={sending || asking}
             onChange={(e) => setImportLink(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void requestLink()}
@@ -94,7 +98,13 @@ export function DiscoverPage() {
         <button className="primary" disabled={sending || searching || asking || !link.trim()} onClick={() => void requestLink()}>
           {sending ? "pedindo..." : searching ? "buscando..." : searchMode ? "buscar" : "pedir"}
         </button>
-        {linkError && <span className="small err">{linkError}</span>}
+        {linkError ? (
+          <span className="small err">{linkError}</span>
+        ) : (
+          !link.trim() && (
+            <span className="small muted link-hint">Cole o link de uma playlist ou álbum (YouTube, Spotify ou Deezer) e vêm todas as músicas.</span>
+          )
+        )}
       </div>
 
       {/* Opcional: só aparece com um link válido, com resultados de busca (ou se já houver tags escolhidas). */}
@@ -227,7 +237,7 @@ const hitKey = (h: TrackSearchHit) => `${plainText(mainArtist(h.artist))}|${plai
  * histórico, os que mais aparecem na biblioteca. Tudo calculado aqui: o servidor
  * só repassa o nome do artista ao Deezer.
  */
-function favoriteArtists(lib: Library, limit = 2): string[] {
+function favoriteArtists(lib: Library, limit = 8): string[] {
   const score = new Map<string, { name: string; n: number }>();
   const add = (artist: string, n: number) => {
     const name = mainArtist(artist);
@@ -246,6 +256,30 @@ function favoriteArtists(lib: Library, limit = 2): string[] {
     .sort((a, b) => b.n - a.n)
     .slice(0, limit)
     .map((a) => a.name);
+}
+
+/**
+ * O artista sorteado para o "Porque você ouve" (um entre os que a pessoa mais ouve).
+ * Fica o mesmo enquanto ela está no Descobrir (fechar uma busca não troca), e muda a
+ * cada vez que ela volta: assim não aparece sempre o mesmo.
+ */
+let pickedArtist: string | null = null;
+
+function useRandomArtist(candidates: string[]): string | null {
+  const [pick, setPick] = useState<string | null>(pickedArtist);
+  useEffect(() => {
+    if (pickedArtist && candidates.includes(pickedArtist)) return setPick(pickedArtist);
+    pickedArtist = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] : null;
+    setPick(pickedArtist);
+  }, [candidates.join("|")]);
+  return pick;
+}
+
+/** Tocar num artista dos parecidos: busca as músicas dele no campo do topo. */
+function searchArtist(name: string) {
+  setImportLink(name);
+  void searchTracks();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 /** Respostas já buscadas nesta sessão (trocar de tela não pergunta de novo). */
@@ -312,8 +346,8 @@ function DiscoverSections() {
   const lib = useStore(libraryStore);
   const owned = useMemo(() => ownedKeys(lib), [lib.tracks]);
   const artists = useMemo(() => favoriteArtists(lib), [lib.tracks, lib.plays]);
+  const artist = useRandomArtist(artists);
   const [list, setList] = useState(() => sessionStorage.getItem("discoverList") || "brasil");
-  const [extra, setExtra] = useState<string | null>(null);
   const choose = (key: string) => {
     setList(key);
     sessionStorage.setItem("discoverList", key);
@@ -321,15 +355,12 @@ function DiscoverSections() {
 
   return (
     <div className="discover">
-      {artists.length > 0 && (
+      {artist && (
         <section>
           <div className="section-head">
             <h2>Para você</h2>
           </div>
-          {artists.map((a) => (
-            <ArtistRow key={a} name={a} title={`Porque você ouve ${a}`} owned={owned} picked={extra} onRelated={setExtra} />
-          ))}
-          {extra && <ArtistRow key={extra} name={extra} title={`Mais de ${extra}`} owned={owned} picked={extra} onRelated={setExtra} />}
+          <ArtistRow key={artist} name={artist} owned={owned} />
         </section>
       )}
 
@@ -370,21 +401,9 @@ function ChartList({ listKey, owned }: { listKey: string; owned: Set<string> }) 
 
 /**
  * Um artista: as mais famosas que a pessoa ainda não tem, em pôsteres rolando para
- * o lado, e logo abaixo os artistas parecidos (tocar num abre a fileira dele).
+ * o lado, e logo abaixo os artistas parecidos em discos de vinil (tocar busca o nome).
  */
-function ArtistRow({
-  name,
-  title,
-  owned,
-  picked,
-  onRelated,
-}: {
-  name: string;
-  title: string;
-  owned: Set<string>;
-  picked: string | null;
-  onRelated: (name: string | null) => void;
-}) {
+function ArtistRow({ name, owned }: { name: string; owned: Set<string> }) {
   const data = useArtist(name);
   const { requested } = useStore(importsStore);
   if (!data) return <p className="muted small">Carregando…</p>;
@@ -392,7 +411,7 @@ function ArtistRow({
   if (!fresh.length && !data.related.length) return null;
   return (
     <div className="discover-artist">
-      <h3>{title}</h3>
+      <h3>Porque você ouve {data.artist}</h3>
       {fresh.length > 0 ? (
         <div className="posters">
           {fresh.map((h) => (
@@ -405,15 +424,13 @@ function ArtistRow({
       {data.related.length > 0 && (
         <>
           <h4>Parecidos com {data.artist}</h4>
-          <div className="artist-pills">
-            {data.related.slice(0, 6).map((r) => (
-              <button
-                key={r.name}
-                className={`artist-pill${picked === r.name ? " on" : ""}`}
-                onClick={() => onRelated(picked === r.name ? null : r.name)}
-              >
-                {r.picture ? <img src={r.picture} alt="" loading="lazy" /> : <span className="artist-pill-blank" />}
-                {r.name}
+          <div className="artist-discs">
+            {data.related.slice(0, 8).map((r) => (
+              <button key={r.name} className="artist-disc" title={`Buscar ${r.name}`} onClick={() => searchArtist(r.name)}>
+                <span className="artist-disc-vinyl">
+                  <Vinyl seed={r.name} image={r.picture ?? undefined} />
+                </span>
+                <span className="artist-disc-name">{r.name}</span>
               </button>
             ))}
           </div>
@@ -439,10 +456,16 @@ function PosterCard({ hit: h, requested }: { hit: TrackSearchHit; requested: boo
         onClick={() => void togglePreview(h.id)}
       >
         {h.cover ? <img src={bigCover(h.cover)} alt="" loading="lazy" /> : <span className="poster-blank" />}
-        {h.preview && (
-          <span className="poster-play">
-            <Icon name={playing && !preview.loading ? "pause" : "play"} size={14} />
+        {playing ? (
+          <span className="poster-disc">
+            <Vinyl seed={h.title + h.artist} image={h.cover ?? undefined} spinning />
           </span>
+        ) : (
+          h.preview && (
+            <span className="poster-play">
+              <Icon name="play" size={14} />
+            </span>
+          )
         )}
         <span className="poster-text">
           <span className="poster-title">{h.title}</span>

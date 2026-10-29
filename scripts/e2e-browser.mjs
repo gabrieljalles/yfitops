@@ -131,7 +131,7 @@ try {
   await helper.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
   await helper.goto(URL + "#/ajustes");
   await page.goto(URL + "#/descobrir");
-  await page.getByPlaceholder("Nome da música ou link").fill(LINK);
+  await page.getByPlaceholder("Nome da música ou link da playlist").fill(LINK);
   await page.locator(".link-import").getByRole("button", { name: "pedir", exact: true }).click();
   await page.locator(".request").waitFor();
   console.log("   pedido:", await page.locator(".request .stage").first().innerText(), "·", await page.locator(".request .track-sub").first().innerText());
@@ -271,10 +271,26 @@ try {
     .waitForFunction(() => [...document.querySelectorAll(".poster-art img")].slice(0, 2).every((i) => i.complete && i.naturalWidth > 0), null, { timeout: 15000 })
     .catch(() => {});
   await shot("12b-celular-descobrir");
-  if (await page.locator(".artist-pills").count()) {
-    await page.locator(".artist-pills").first().evaluate((el) => el.scrollIntoView({ block: "center" }));
+  if (await page.locator(".artist-discs").count()) {
+    // Prévia num pôster: aparece o vinil girando no canto.
+    await page.locator(".poster-art:not([disabled])").first().click();
+    await page.locator(".poster-disc .vinyl.spin").waitFor({ timeout: 15000 });
+    console.log("   vinil girando na prévia do pôster ✓");
+    // Com música tocando no player, a prévia continua (antes ela se desligava sozinha).
+    await page.waitForTimeout(3000);
+    if (!(await page.locator(".poster-disc").count())) throw new Error("a prévia parou sozinha");
+    console.log("   prévia continua tocando ✓");
+    await page.locator(".artist-discs").first().evaluate((el) => el.scrollIntoView({ block: "center" }));
     await page.waitForTimeout(600);
     await shot("12b2-celular-parecidos");
+    // Tocar num artista dos parecidos busca o nome dele.
+    const name = (await page.locator(".artist-disc-name").first().innerText()).trim();
+    await page.locator(".artist-disc").first().click();
+    await page.locator(".search-results").waitFor({ timeout: 20000 });
+    if ((await page.getByLabel("Link ou nome da música").inputValue()) !== name) throw new Error("o artista não foi para a busca");
+    console.log(`   parecidos: tocar em ${name} busca o nome ✓`);
+    await shot("12b3-celular-busca-artista");
+    await page.getByRole("button", { name: "fechar" }).click();
   }
   await page.goto(URL + "#/biblioteca");
   await page.waitForTimeout(800);
