@@ -266,7 +266,16 @@ try {
   await shot("12-celular-ajustes");
   await page.goto(URL + "#/descobrir");
   await page.locator(".discover .tracks.hits li").first().waitFor({ timeout: 20000 });
+  // "Para você" (a música pedida já deu um artista): as capas dos pôsteres carregam antes da foto.
+  await page
+    .waitForFunction(() => [...document.querySelectorAll(".poster-art img")].slice(0, 2).every((i) => i.complete && i.naturalWidth > 0), null, { timeout: 15000 })
+    .catch(() => {});
   await shot("12b-celular-descobrir");
+  if (await page.locator(".artist-pills").count()) {
+    await page.locator(".artist-pills").first().evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await page.waitForTimeout(600);
+    await shot("12b2-celular-parecidos");
+  }
   await page.goto(URL + "#/biblioteca");
   await page.waitForTimeout(800);
   await shot("12c-celular-biblioteca");

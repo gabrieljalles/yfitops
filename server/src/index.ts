@@ -1878,12 +1878,14 @@ app.get("/discover/artist", async (c) => {
   if (!artist?.id) return c.json({ artist: name, tracks: [], related: [] } satisfies DiscoverArtist);
   const [top, related] = await Promise.all([
     deezerCached<{ data?: DeezerTrack[] }>(`/artist/${artist.id}/top?limit=15`, 24 * 60 * 60),
-    deezerCached<{ data?: { name?: string }[] }>(`/artist/${artist.id}/related?limit=6`, 7 * 24 * 60 * 60).catch(() => ({ data: [] })),
+    deezerCached<{ data?: { name?: string; picture_medium?: string }[] }>(`/artist/${artist.id}/related?limit=6`, 7 * 24 * 60 * 60).catch(
+      () => ({ data: [] }),
+    ),
   ]);
   return c.json({
     artist: artist.name ?? name,
     tracks: deezerHits(top.data),
-    related: (related.data ?? []).map((a) => a.name ?? "").filter(Boolean),
+    related: (related.data ?? []).filter((a) => a.name).map((a) => ({ name: a.name!, picture: a.picture_medium ?? null })),
   } satisfies DiscoverArtist);
 });
 

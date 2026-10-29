@@ -327,9 +327,9 @@ function DiscoverSections() {
             <h2>Para você</h2>
           </div>
           {artists.map((a) => (
-            <ArtistRow key={a} name={a} title={`Porque você ouve ${a}`} owned={owned} onRelated={setExtra} />
+            <ArtistRow key={a} name={a} title={`Porque você ouve ${a}`} owned={owned} picked={extra} onRelated={setExtra} />
           ))}
-          {extra && <ArtistRow key={extra} name={extra} title={`Mais de ${extra}`} owned={owned} onRelated={setExtra} />}
+          {extra && <ArtistRow key={extra} name={extra} title={`Mais de ${extra}`} owned={owned} picked={extra} onRelated={setExtra} />}
         </section>
       )}
 
@@ -368,25 +368,90 @@ function ChartList({ listKey, owned }: { listKey: string; owned: Set<string> }) 
   );
 }
 
-function ArtistRow({ name, title, owned, onRelated }: { name: string; title: string; owned: Set<string>; onRelated: (name: string) => void }) {
+/**
+ * Um artista: as mais famosas que a pessoa ainda não tem, em pôsteres rolando para
+ * o lado, e logo abaixo os artistas parecidos (tocar num abre a fileira dele).
+ */
+function ArtistRow({
+  name,
+  title,
+  owned,
+  picked,
+  onRelated,
+}: {
+  name: string;
+  title: string;
+  owned: Set<string>;
+  picked: string | null;
+  onRelated: (name: string | null) => void;
+}) {
   const data = useArtist(name);
+  const { requested } = useStore(importsStore);
   if (!data) return <p className="muted small">Carregando…</p>;
-  const fresh = data.tracks.filter((h) => !owned.has(hitKey(h))).slice(0, 8);
+  const fresh = data.tracks.filter((h) => !owned.has(hitKey(h))).slice(0, 10);
   if (!fresh.length && !data.related.length) return null;
   return (
     <div className="discover-artist">
       <h3>{title}</h3>
-      {fresh.length > 0 ? <HitList hits={fresh} owned={owned} /> : <p className="muted small">Você já tem as mais famosas.</p>}
-      {data.related.length > 0 && (
-        <div className="chips">
-          <span className="muted small">Parecidos:</span>
-          {data.related.slice(0, 5).map((r) => (
-            <button key={r} className="chip ghost" onClick={() => onRelated(r)}>
-              {r}
-            </button>
+      {fresh.length > 0 ? (
+        <div className="posters">
+          {fresh.map((h) => (
+            <PosterCard key={h.id} hit={h} requested={requested.includes(h.id)} />
           ))}
         </div>
+      ) : (
+        <p className="muted small">Você já tem as mais famosas.</p>
       )}
+      {data.related.length > 0 && (
+        <>
+          <h4>Parecidos com {data.artist}</h4>
+          <div className="artist-pills">
+            {data.related.slice(0, 6).map((r) => (
+              <button
+                key={r.name}
+                className={`artist-pill${picked === r.name ? " on" : ""}`}
+                onClick={() => onRelated(picked === r.name ? null : r.name)}
+              >
+                {r.picture ? <img src={r.picture} alt="" loading="lazy" /> : <span className="artist-pill-blank" />}
+                {r.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Capa do Deezer em tamanho maior (os pôsteres são mais altos que a capa média). */
+const bigCover = (url: string) => url.replace(/\/\d+x\d+-/, "/500x500-");
+
+/** Pôster: a capa alta com o nome por cima (tocar ouve a prévia) e o botão de pedir embaixo. */
+function PosterCard({ hit: h, requested }: { hit: TrackSearchHit; requested: boolean }) {
+  const preview = useStore(previewStore);
+  const playing = preview.id === h.id;
+  return (
+    <div className={`poster${playing ? " previewing" : ""}`}>
+      <button
+        className="poster-art"
+        disabled={!h.preview}
+        title={h.preview ? (playing ? "Parar a prévia" : "Ouvir 30 segundos") : undefined}
+        onClick={() => void togglePreview(h.id)}
+      >
+        {h.cover ? <img src={bigCover(h.cover)} alt="" loading="lazy" /> : <span className="poster-blank" />}
+        {h.preview && (
+          <span className="poster-play">
+            <Icon name={playing && !preview.loading ? "pause" : "play"} size={14} />
+          </span>
+        )}
+        <span className="poster-text">
+          <span className="poster-title">{h.title}</span>
+          <span className="poster-artist">{h.artist}</span>
+        </span>
+      </button>
+      <button className={`chip${requested ? " on" : ""}`} disabled={requested} onClick={() => void requestTrack(h)}>
+        {requested ? "pedida" : "pedir"}
+      </button>
     </div>
   );
 }

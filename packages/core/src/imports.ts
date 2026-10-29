@@ -49,7 +49,7 @@ export interface DiscoverList {
 export interface DiscoverArtist {
   artist: string;
   tracks: TrackSearchHit[];
-  related: string[];
+  related: { name: string; picture: string | null }[];
 }
 
 /** Escolhas de quem pediu. */
