@@ -197,12 +197,15 @@ async function work(job: SpotJob) {
 
   const t: ResolvedTrack = { ...job.meta };
   const label = t.title || "uma música";
+  // Etapas, para a barra de quem pediu: procurar (5), baixar (10 a 70), capa (72), preparar e enviar (80 a 95).
+  const progress = progressReporter(job.id);
   try {
     // Alguém pode ter trazido enquanto ela esperava na fila.
     const known = await inCatalog(t);
     if (known) return await report(`/spot/track/${job.id}`, { device, songId: known.id });
     if (!t.videoId) {
       patch({ doing: `procurando "${label}" no YouTube` });
+      progress(5);
       const hit = await searchYouTube(t);
       t.videoId = hit.videoId;
       if (!t.title) t.title = hit.title;
@@ -214,7 +217,8 @@ async function work(job: SpotJob) {
     check();
     holdAwake(true);
     patch({ doing: `baixando "${label}"` });
-    const dl = await downloadAudio(t.videoId);
+    progress(10);
+    const dl = await downloadAudio(t.videoId, (done) => progress(10 + done * 60));
     check();
     // Mais de 13 minutos não vai para o servidor. Se o pedido é de outra pessoa (ou este
     // é o celular ajudante), este celular não fica com ela: volta para a fila, para o
@@ -231,6 +235,7 @@ async function work(job: SpotJob) {
       t.artist = split?.artist || artistFromChannel(dl.channel) || artistFromChannel(t.artist);
       t.title = split?.title || videoTitle;
     }
+    progress(72);
     const cover = await fetchCover(t, t.videoId);
     check();
     if (tooLong) {
@@ -255,13 +260,32 @@ async function work(job: SpotJob) {
       artist: t.artist,
       album: t.album,
       alsoFrom: catalogKey(t) ? [catalogKey(t)!] : undefined,
-    }, (status) => patch({ doing: `${status} "${label}"` }));
+    }, (status) => {
+      patch({ doing: `${status} "${label}"` });
+      progress(status === "enviando" ? 90 : 80);
+    });
     await report(`/spot/track/${job.id}`, { device, songId });
     patch({ done: spotStore.get().done + 1 });
   } catch (e) {
     if (e instanceof Stopped) throw e;
     await report(`/spot/track/${job.id}`, { device, ...failureOf(e) });
   }
+}
+
+/**
+ * Conta para quem pediu quanto do download já andou (0 a 100). No máximo a cada
+ * 4 segundos, e só quando mudou: é só para a barra andar na tela de quem pediu.
+ */
+function progressReporter(id: string) {
+  let sent = -1;
+  let at = 0;
+  return (pct: number) => {
+    const p = Math.round(pct);
+    if (p <= sent || Date.now() - at < 4000) return;
+    sent = p;
+    at = Date.now();
+    void api.json(`/spot/progress/${id}`, { method: "POST", json: { device: deviceId(), progress: p } }).catch(() => {});
+  };
 }
 
 function failureOf(e: unknown): { error: string; kind: SpotFailKind } {

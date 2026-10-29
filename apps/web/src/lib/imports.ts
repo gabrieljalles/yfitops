@@ -38,7 +38,20 @@ export interface ImportsState {
   searching: boolean;
   /** Resultados já pedidos (o botão vira "pedida"). */
   requested: string[];
+  /** Músicas que acabaram de chegar (o aviso "chegou" fica um tempo na tela). */
+  arrived: Arrived[];
 }
+
+/** Uma música pedida que acabou de entrar na biblioteca. */
+export interface Arrived {
+  trackId: string;
+  title: string;
+  artist: string;
+  at: number;
+}
+
+/** Por quanto tempo o aviso "chegou" fica na tela. */
+const ARRIVED_FOR = 15 * 60_000;
 
 export const importsStore = createStore<ImportsState>({
   link: "",
@@ -54,6 +67,7 @@ export const importsStore = createStore<ImportsState>({
   resultsFor: "",
   searching: false,
   requested: [],
+  arrived: [],
 });
 const patch = (p: Partial<ImportsState>) => importsStore.set((s) => ({ ...s, ...p }));
 
@@ -107,7 +121,7 @@ export async function requestTrack(hit: TrackSearchHit) {
 }
 
 /** Fecha os resultados da busca. */
-export const clearSearch = () => patch({ results: null, resultsFor: "", requested: [] });
+export const clearSearch = () => patch({ results: null, resultsFor: "" });
 
 /**
  * Link do YouTube de um vídeo DENTRO de uma lista (watch?v=X&list=Y), o que
@@ -268,7 +282,49 @@ export function requestProgress(r: ImportRequestInfo): string {
     .join(" · ");
 }
 
-const openRequests = () =>importsStore.get().requests.some((r) => !finished(r));
+const openRequests = () => importsStore.get().requests.some((r) => !finished(r));
+
+/** Tira o aviso "chegou" de uma música (ou de todas). */
+export const dismissArrived = (trackId?: string) =>
+  patch({ arrived: trackId ? importsStore.get().arrived.filter((a) => a.trackId !== trackId) : [] });
+
+/**
+ * Quanto de uma música pedida já andou (0 a 100). Na fila fica em 3 (a barra
+ * aparece); baixando, vem do celular que baixa; pronta, 100.
+ */
+export function trackPercent(t: ImportTrackInfo): number {
+  if (t.status === "done") return 100;
+  if (t.status === "working") return Math.max(8, Math.min(97, t.progress ?? 0));
+  return 3;
+}
+
+/** Quanto do pedido já andou (0 a 100), contando só as músicas que vão chegar. */
+export function requestPercent(r: ImportRequestInfo): number {
+  if (r.status === "queued") return 2;
+  if (r.status === "listing") return 5;
+  const live = r.tracks.filter((t) => t.status !== "failed" && t.status !== "skipped");
+  if (!live.length) return 100;
+  return Math.round(live.reduce((n, t) => n + trackPercent(t), 0) / live.length);
+}
+
+/** Em que pé está, em poucas palavras: "Na fila", "Baixando", "Quase pronta"... */
+export function requestStage(r: ImportRequestInfo, helpers: number): { label: string; hint: string; working: boolean } {
+  if (r.status === "failed") return { label: "Não deu certo", hint: r.error ?? "O link não pôde ser lido", working: false };
+  const working = r.status === "listing" || r.tracks.some((t) => t.status === "working");
+  if (working) {
+    const pct = requestPercent(r);
+    return { label: pct >= 75 ? "Quase pronta" : "Baixando", hint: "Um celular ajudante está trazendo a música para você.", working: true };
+  }
+  if (!finished(r))
+    return {
+      label: "Na fila",
+      hint: helpers
+        ? "Já já um celular ajudante começa a baixar."
+        : "Esperando um celular ajudante ficar livre. Pode fechar o app: a música chega sozinha.",
+      working: false,
+    };
+  return { label: "Pronta", hint: "Já está na sua biblioteca.", working: false };
+}
 
 const catalogKey = (t: ResolvedTrack) => (t.spotifyId ? `spotify:${t.spotifyId}` : t.deezerId ? `deezer:${t.deezerId}` : undefined);
 
@@ -293,13 +349,19 @@ export function refreshImports(): Promise<void> {
 /** Entrega o que ficou pronto. Devolve true se o pedido acabou sem falhas (e saiu da fila). */
 async function deliver(r: ImportRequestInfo): Promise<boolean> {
   const fresh = r.tracks.filter((t) => t.status === "done" && t.song && !t.delivered);
+  const arrived: Arrived[] = [];
   for (const t of fresh) {
     const key = catalogKey(t.meta);
-    await addSong(t.song!, {
+    const { id } = await addSong(t.song!, {
       tags: r.opts.tags,
       source: t.meta.videoId ? `youtube:${t.meta.videoId}` : undefined,
       alsoFrom: key ? [key] : undefined,
     });
+    arrived.push({ trackId: id, title: t.song!.title, artist: t.song!.artist, at: Date.now() });
+  }
+  if (arrived.length) {
+    const recent = importsStore.get().arrived.filter((a) => Date.now() - a.at < ARRIVED_FOR);
+    patch({ arrived: [...arrived.reverse(), ...recent].slice(0, 20) });
   }
   if (fresh.length) {
     await api.json(`/imports/${r.id}/delivered`, { method: "POST", json: { tracks: fresh.map((t) => t.id) } }).catch(() => {});
@@ -380,20 +442,26 @@ const onVisible = () => {
 };
 
 /**
- * Acompanha os pedidos: ao abrir o app e, enquanto houver pedido em aberto, a
- * cada 20 s com o app na tela (fechado, o pedido continua na fila do servidor).
+ * Acompanha os pedidos: ao abrir o app e, enquanto houver pedido em aberto, com o
+ * app na tela: a cada 6 s se algum está baixando (a barra anda), senão a cada 20 s.
+ * Fechado, o pedido continua na fila do servidor.
  */
 export function watchImports() {
   void refreshImports().catch(() => {});
   clearInterval(polling);
+  let last = 0;
   polling = setInterval(() => {
-    if (document.visibilityState === "visible" && openRequests()) void refreshImports().catch(() => {});
-  }, 20_000);
+    if (document.visibilityState !== "visible" || !openRequests()) return;
+    const busy = importsStore.get().requests.some((r) => r.status === "listing" || r.tracks.some((t) => t.status === "working"));
+    if (Date.now() - last < (busy ? 6_000 : 20_000)) return;
+    last = Date.now();
+    void refreshImports().catch(() => {});
+  }, 2_000);
   document.addEventListener("visibilitychange", onVisible);
 }
 
 export function stopImports() {
   clearInterval(polling);
   document.removeEventListener("visibilitychange", onVisible);
-  patch({ requests: [], loaded: false });
+  patch({ requests: [], loaded: false, arrived: [] });
 }

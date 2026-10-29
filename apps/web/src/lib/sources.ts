@@ -238,8 +238,8 @@ function testAudio(): string | null {
   }
 }
 
-/** Baixa o melhor áudio de um vídeo (pelo celular). */
-export async function downloadAudio(videoId: string): Promise<Downloaded> {
+/** Baixa o melhor áudio de um vídeo (pelo celular). `onProgress` recebe de 0 a 1. */
+export async function downloadAudio(videoId: string, onProgress?: (done: number) => void): Promise<Downloaded> {
   const fake = testAudio();
   if (fake) {
     const blob = await (await fetch(fake)).blob();
@@ -270,6 +270,7 @@ export async function downloadAudio(videoId: string): Promise<Downloaded> {
         const r = await chunk(`${url}&range=${start}-${end}`);
         const part = new Uint8Array(await r.arrayBuffer());
         parts.push(part);
+        if (total) onProgress?.(Math.min(1, (end + 1) / total));
         if (total ? end >= total - 1 : part.length < CHUNK) break;
       }
       const mime = (best.mime_type ?? "audio/webm").split(";")[0];

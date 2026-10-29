@@ -1,5 +1,5 @@
 import { deleteTracks, musicas, setFavorite } from "../lib/tracks";
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
 import { confirmDialog, promptDialog } from "../lib/dialog";
@@ -10,12 +10,18 @@ import { allTags } from "../lib/search";
 import { attempt, toast } from "../lib/ui";
 import { navigate } from "../router";
 import { GroupGrid } from "./Home";
+import { SearchResults } from "./Search";
 
 type Tab = "musicas" | "grupos" | "tags";
 type Sort = "recentes" | "titulo" | "artista";
 
-export function LibraryPage() {
+export function LibraryPage({ initialTag }: { initialTag?: string }) {
   const lib = useStore(libraryStore);
+  // Busca (antes era uma aba à parte): texto e tags. Com algo buscado, a lista vira os resultados.
+  const [q, setQ] = useState("");
+  const [searchTags, setSearchTags] = useState<string[]>(initialTag ? [initialTag] : []);
+  const query = useDeferredValue(q);
+  const searching = !!query.trim() || searchTags.length > 0;
   const [tab, setTab] = useState<Tab>(() => (sessionStorage.getItem("libTab") as Tab) || "musicas");
   const [sort, setSort] = useState<Sort>("recentes");
   /** null = fora do modo de seleção. */
@@ -96,123 +102,149 @@ export function LibraryPage() {
 
   return (
     <div className="page">
-      <div className="tabs">
-        {(["musicas", "grupos", "tags"] as const).map((t) => (
-          <button key={t} className={tab === t ? "on" : ""} onClick={() => choose(t)}>
-            {{ musicas: "Músicas", grupos: "Playlists", tags: "Tags" }[t]}
-          </button>
-        ))}
+      <div className="library-search">
+        <input
+          className="search-input"
+          type="search"
+          placeholder="Buscar música, artista ou #tag"
+          aria-label="Buscar na biblioteca"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        {searchTags.length > 0 && (
+          <div className="chips">
+            {searchTags.map((t) => (
+              <button key={t} className="chip on" title="Tirar o filtro" onClick={() => setSearchTags(searchTags.filter((x) => x !== t))}>
+                #{t} <Icon name="close" size={12} />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {tab === "musicas" && (
+      {searching ? (
+        <SearchResults query={query} tags={searchTags} />
+      ) : (
         <>
-          {selected ? (
-            <div className="section-head select-bar">
-              <span className="small">
-                <strong>{selected.size}</strong> {selected.size === 1 ? "selecionada" : "selecionadas"}
-              </span>
-              <div className="row wrap">
-                <button className="chip ghost" disabled={!!deleting} onClick={() => setSelected(allSelected ? new Set() : new Set(ids))}>
-                  {allSelected ? "desmarcar todas" : "selecionar todas"}
-                </button>
-                <button className="chip" disabled={!selected.size || !!deleting} onClick={() => setPicking(true)}>
-                  <Icon name="plus" size={14} /> adicionar à playlist
-                </button>
-                <button className="chip" disabled={!selected.size || !!deleting} onClick={() => void favoriteSelected()}>
-                  <Icon name={allFavorite ? "heart" : "heartFilled"} size={14} /> {allFavorite ? "desfavoritar" : "favoritar"}
-                </button>
-                <button className="chip danger" disabled={!selected.size || !!deleting} onClick={() => void removeSelected()}>
-                  <Icon name="trash" size={14} /> {deleting || "excluir"}
-                </button>
-                <button className="chip ghost" disabled={!!deleting} onClick={() => setSelected(null)}>
-                  cancelar
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="section-head">
-              <span className="muted small">{musicas(ids.length)}</span>
-              <div className="row">
-                <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Ordenar">
-                  <option value="recentes">Adicionadas</option>
-                  <option value="titulo">Título</option>
-                  <option value="artista">Artista</option>
-                </select>
-                {ids.length > 0 && (
-                  <>
-                    <button className="chip ghost" onClick={() => playList(ids)}>
-                      <Icon name="play" size={14} /> tocar tudo
-                    </button>
-                    <button className="chip ghost" onClick={() => setSelected(new Set())}>
-                      <Icon name="check" size={14} /> selecionar
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-          <TrackList
-            ids={ids}
-            empty="Nenhuma música ainda. Vá em Enviar."
-            selected={selected ?? undefined}
-            onToggle={deleting ? undefined : toggle}
-          />
-          {picking && selected && (
-            <PlaylistPicker
-              ids={[...selected]}
-              onClose={() => setPicking(false)}
-              onDone={() => {
-                setPicking(false);
-                setSelected(null);
-              }}
-            />
-          )}
-        </>
-      )}
-
-      {tab === "grupos" && (
-        <>
-          <div className="section-head">
-            <span />
-            <button
-              className="chip ghost"
-              onClick={async () => {
-                const name = await promptDialog({ title: "Nova playlist", input: { placeholder: "Nome da playlist" }, confirm: "criar" });
-                if (name) void attempt(async () => navigate(`/playlist/${await createPlaylist(name)}`));
-              }}
-            >
-              <Icon name="plus" size={14} /> nova playlist
-            </button>
-          </div>
-          <GroupGrid
-            items={[
-              ...(favorites.length
-                ? [{ key: "favoritas", name: "Favoritas", sub: musicas(favorites.length), trackIds: favorites, href: "/favoritas" }]
-                : []),
-              ...Object.entries(lib.playlists)
-                .sort((a, b) => a[1].name.localeCompare(b[1].name))
-                .map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/playlist/${id}` })),
-            ]}
-            empty="Nenhuma playlist ainda."
-          />
-        </>
-      )}
-
-      {tab === "tags" &&
-        (tags.length ? (
-          <ul className="tag-list">
-            {tags.map(([t, n]) => (
-              <li key={t}>
-                <button onClick={() => navigate(`/buscar?tag=${encodeURIComponent(t)}`)}>
-                  <span>#{t}</span>
-                  <span className="muted">{n}</span>
-                </button>
-              </li>
+          <div className="tabs">
+            {(["musicas", "grupos", "tags"] as const).map((t) => (
+              <button key={t} className={tab === t ? "on" : ""} onClick={() => choose(t)}>
+                {{ musicas: "Músicas", grupos: "Playlists", tags: "Tags" }[t]}
+              </button>
             ))}
-          </ul>
-        ) : (
-          <p className="muted empty">Adicione tags pelo menu ⋯ de cada música.</p>
-        ))}
+          </div>
+
+          {tab === "musicas" && (
+            <>
+              {selected ? (
+                <div className="section-head select-bar">
+                  <span className="small">
+                    <strong>{selected.size}</strong> {selected.size === 1 ? "selecionada" : "selecionadas"}
+                  </span>
+                  <div className="row wrap">
+                    <button className="chip ghost" disabled={!!deleting} onClick={() => setSelected(allSelected ? new Set() : new Set(ids))}>
+                      {allSelected ? "desmarcar todas" : "selecionar todas"}
+                    </button>
+                    <button className="chip" disabled={!selected.size || !!deleting} onClick={() => setPicking(true)}>
+                      <Icon name="plus" size={14} /> adicionar à playlist
+                    </button>
+                    <button className="chip" disabled={!selected.size || !!deleting} onClick={() => void favoriteSelected()}>
+                      <Icon name={allFavorite ? "heart" : "heartFilled"} size={14} /> {allFavorite ? "desfavoritar" : "favoritar"}
+                    </button>
+                    <button className="chip danger" disabled={!selected.size || !!deleting} onClick={() => void removeSelected()}>
+                      <Icon name="trash" size={14} /> {deleting || "excluir"}
+                    </button>
+                    <button className="chip ghost" disabled={!!deleting} onClick={() => setSelected(null)}>
+                      cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="section-head">
+                  <span className="muted small">{musicas(ids.length)}</span>
+                  <div className="row">
+                    <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Ordenar">
+                      <option value="recentes">Adicionadas</option>
+                      <option value="titulo">Título</option>
+                      <option value="artista">Artista</option>
+                    </select>
+                    {ids.length > 0 && (
+                      <>
+                        <button className="chip ghost" onClick={() => playList(ids)}>
+                          <Icon name="play" size={14} /> tocar tudo
+                        </button>
+                        <button className="chip ghost" onClick={() => setSelected(new Set())}>
+                          <Icon name="check" size={14} /> selecionar
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              <TrackList
+                ids={ids}
+                empty="Nenhuma música ainda. Vá em Descobrir."
+                selected={selected ?? undefined}
+                onToggle={deleting ? undefined : toggle}
+              />
+              {picking && selected && (
+                <PlaylistPicker
+                  ids={[...selected]}
+                  onClose={() => setPicking(false)}
+                  onDone={() => {
+                    setPicking(false);
+                    setSelected(null);
+                  }}
+                />
+              )}
+            </>
+          )}
+
+          {tab === "grupos" && (
+            <>
+              <div className="section-head">
+                <span />
+                <button
+                  className="chip ghost"
+                  onClick={async () => {
+                    const name = await promptDialog({ title: "Nova playlist", input: { placeholder: "Nome da playlist" }, confirm: "criar" });
+                    if (name) void attempt(async () => navigate(`/playlist/${await createPlaylist(name)}`));
+                  }}
+                >
+                  <Icon name="plus" size={14} /> nova playlist
+                </button>
+              </div>
+              <GroupGrid
+                items={[
+                  ...(favorites.length
+                    ? [{ key: "favoritas", name: "Favoritas", sub: musicas(favorites.length), trackIds: favorites, href: "/favoritas" }]
+                    : []),
+                  ...Object.entries(lib.playlists)
+                    .sort((a, b) => a[1].name.localeCompare(b[1].name))
+                    .map(([id, p]) => ({ key: id, name: p.name, sub: musicas(p.trackIds.length), trackIds: p.trackIds, href: `/playlist/${id}` })),
+                ]}
+                empty="Nenhuma playlist ainda."
+              />
+            </>
+          )}
+
+          {tab === "tags" &&
+            (tags.length ? (
+              <ul className="tag-list">
+                {tags.map(([t, n]) => (
+                  <li key={t}>
+                    <button onClick={() => setSearchTags([t])}>
+                      <span>#{t}</span>
+                      <span className="muted">{n}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted empty">Adicione tags pelo menu ⋯ de cada música.</p>
+            ))}
+        </>
+      )}
     </div>
   );
 }

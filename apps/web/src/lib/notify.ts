@@ -26,7 +26,7 @@ export async function askNotifyPermission(): Promise<void> {
 /** Mostra um aviso, a não ser que a pessoa já esteja olhando a tela de envio. */
 export async function notify(title: string, body: string) {
   if (!supported() || !prefsStore.get().notify || Notification.permission !== "granted") return;
-  if (document.visibilityState === "visible" && location.hash.startsWith("#/enviar")) return;
+  if (document.visibilityState === "visible" && /^#\/(descobrir|enviar)/.test(location.hash)) return;
   const options: NotificationOptions = { body, icon: "/icon-192.png", badge: "/icon-192.png", tag: "yfitops-import" };
   try {
     // No celular, avisos só funcionam pelo service worker.

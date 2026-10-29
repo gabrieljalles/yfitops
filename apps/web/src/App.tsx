@@ -21,9 +21,8 @@ import { FavoritesPage, GroupPage } from "./pages/Group";
 import { HomePage } from "./pages/Home";
 import { LibraryPage } from "./pages/Library";
 import { PaywallPage } from "./pages/Paywall";
-import { SearchPage } from "./pages/Search";
 import { SettingsPage } from "./pages/Settings";
-import { UploadPage } from "./pages/Upload";
+import { DiscoverPage } from "./pages/Discover";
 import { navigate, useRoute } from "./router";
 import { finished, importsStore, stopImports, watchImports } from "./lib/imports";
 import { startSpot } from "./lib/spot";
@@ -33,9 +32,8 @@ const AdminPage = lazy(() => import("./pages/Admin"));
 
 const NAV: [string, string, IconName][] = [
   ["", "Início", "home"],
-  ["buscar", "Buscar", "search"],
+  ["descobrir", "Descobrir", "compass"],
   ["biblioteca", "Biblioteca", "library"],
-  ["enviar", "Enviar", "upload"],
   ["ajustes", "Ajustes", "settings"],
 ];
 
@@ -116,15 +114,15 @@ export function App() {
   if (expired) return <PaywallPage session={session} />;
 
   return (
-    <Shell section={parts[0] ?? ""}>
+    <Shell section={{ buscar: "biblioteca", enviar: "descobrir" }[parts[0] ?? ""] ?? parts[0] ?? ""}>
       {(() => {
         switch (parts[0]) {
-          case "buscar":
-            return <SearchPage key={query.get("tag") ?? ""} initialTag={query.get("tag") ?? undefined} />;
+          case "buscar": // a busca agora fica na Biblioteca (links antigos)
           case "biblioteca":
-            return <LibraryPage />;
-          case "enviar":
-            return <UploadPage />;
+            return <LibraryPage key={query.get("tag") ?? ""} initialTag={query.get("tag") ?? undefined} />;
+          case "descobrir":
+          case "enviar": // nome antigo do Descobrir
+            return <DiscoverPage />;
           case "ajustes":
             return <SettingsPage />;
           case "playlist":
@@ -168,7 +166,7 @@ function Shell({ section, children }: { section: string; children: React.ReactNo
           <button key={path} className={section === path ? "on" : ""} onClick={() => navigate(`/${path}`)}>
             <Icon name={icon} />
             <span>{label}</span>
-            {path === "enviar" && (uploading > 0 || waiting > 0) && (
+            {path === "descobrir" && (uploading > 0 || waiting > 0) && (
               <span className="dot" title={waiting ? `${waiting} link(s) esperando na fila` : undefined}>
                 {uploading || waiting}
               </span>

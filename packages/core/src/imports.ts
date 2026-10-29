@@ -35,6 +35,21 @@ export interface TrackSearchHit {
   cover: string | null;
   /** Link da música no Deezer: vira um pedido normal (o celular acha no YouTube e baixa). */
   url: string;
+  /** Tem prévia de 30 segundos (pedida na hora em /discover/preview: o link do Deezer expira). */
+  preview?: boolean;
+}
+
+/** Uma lista pronta do Descobrir (parada do Deezer). */
+export interface DiscoverList {
+  key: string;
+  name: string;
+}
+
+/** "Porque você ouve X": as mais famosas do artista e artistas parecidos. */
+export interface DiscoverArtist {
+  artist: string;
+  tracks: TrackSearchHit[];
+  related: string[];
 }
 
 /** Escolhas de quem pediu. */
@@ -62,6 +77,8 @@ export interface ImportTrackInfo {
   /** A música no catálogo (quando terminou). */
   song?: SongInfo;
   delivered: boolean;
+  /** Baixando: quanto já andou (0 a 100), contado pelo celular que baixa. */
+  progress?: number;
 }
 
 export interface ImportRequestInfo {

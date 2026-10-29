@@ -8,6 +8,7 @@ Player de música pessoal na nuvem: suas músicas criptografadas na Cloudflare (
 - **Capas:** qualquer imagem é recortada num quadrado pelo centro (cortando o lado maior), recebe por cima a textura de capa de disco gasta (`apps/web/public/textura_vinil_branca.png`) e vira um WebP de 300×300 com cerca de 8–30 KB. Sem capa, aparece um vinil desenhado, sem custo de armazenamento.
 - Tags, busca, tocadas recentemente, grupos, offline e várias contas.
 - **Acesso pago:** o cadastro pede o celular. Ao ser aprovada, a conta ganha `TRIAL_DAYS` dias; depois disso, só com meses liberados no **Painel** (que também bloqueia e abre o WhatsApp com a cobrança pronta). Vencido, o servidor recusa tudo (402) e o app mostra a tela de pagamento, inclusive para as músicas baixadas. O celular continua ajudando a baixar os pedidos dos outros.
+- **Descobrir:** as paradas do Deezer (Brasil, mundo e por gênero) e "porque você ouve...", com prévia de 30 segundos; pedir é um toque. Só vem do Deezer: ninguém fica sabendo o que já existe no servidor. Cada pedido mostra uma barra de progresso, contada pelo celular que está baixando.
 - **Catálogo escondido:** cada pessoa só vê o que ela mesma trouxe. Buscar no catálogo inteiro só para o administrador e para quem ele marcar **vê o catálogo** no Painel.
 - **Aviso de atualização:** quando sai versão nova (cada deploy), o app mostra "Tem atualização nova" e recarrega. Vale no navegador e no app Android.
 

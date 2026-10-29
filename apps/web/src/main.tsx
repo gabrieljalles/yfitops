@@ -23,7 +23,7 @@ function receiveSharedLink() {
   // YouTube/Spotify costumam mandar o link dentro do texto ("Ouça X: https://...").
   const text = ["share_url", "share_text", "share_title"].map((k) => q.get(k) ?? "").join(" ");
   const link = text.match(/https?:\/\/\S+/)?.[0];
-  history.replaceState(null, "", "/#/enviar");
+  history.replaceState(null, "", "/#/descobrir");
   if (link) setImportLink(link);
 }
 

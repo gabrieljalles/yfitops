@@ -26,6 +26,8 @@ import {
   type SignupRequest,
   type SongInfo,
   type SongQuery,
+  type DiscoverArtist,
+  type DiscoverList,
   type TrackSearchHit,
   type SyncItem,
   type SyncPushItem,
@@ -1348,8 +1350,14 @@ app.post("/imports", async (c) => {
         .slice(0, 20)
     : [];
   const opts: ImportOpts = { tags, playlist: body.opts?.playlist !== false };
-  const open = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM import_requests WHERE user_id = ?").bind(c.get("userId")).first<{ n: number }>();
-  if ((open?.n ?? 0) >= MAX_OPEN_REQUESTS) fail(429, `Você já tem ${MAX_OPEN_REQUESTS} links na fila. Espere alguns terminarem.`);
+  // Só contam os que ainda esperam ou estão baixando (os prontos não seguram ninguém).
+  const open = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM import_requests r WHERE r.user_id = ? AND (r.status IN ('queued', 'listing')
+       OR EXISTS (SELECT 1 FROM import_tracks t WHERE t.request_id = r.id AND t.status IN ('queued', 'working')))`,
+  )
+    .bind(c.get("userId"))
+    .first<{ n: number }>();
+  if ((open?.n ?? 0) >= MAX_OPEN_REQUESTS) fail(429, `Você já tem ${MAX_OPEN_REQUESTS} pedidos esperando. Espere alguns chegarem.`);
   const id = randomId();
   await c.env.DB.prepare("INSERT INTO import_requests (id, user_id, url, opts, created_at) VALUES (?, ?, ?, ?, ?)")
     .bind(id, c.get("userId"), url, JSON.stringify(opts), Date.now())
@@ -1370,6 +1378,7 @@ type RequestRow = {
   createdAt: number;
 };
 type TrackRow = {
+  progress: number;
   id: string;
   requestId: string;
   pos: number;
@@ -1400,7 +1409,7 @@ app.get("/imports", async (c) => {
   if (reqs.length) {
     const { results } = await db
       .prepare(
-        `SELECT t.id, t.request_id AS requestId, t.pos, t.meta, t.status, t.error, t.delivered, t.song_id AS songId,
+        `SELECT t.id, t.request_id AS requestId, t.pos, t.meta, t.status, t.error, t.delivered, t.progress, t.song_id AS songId,
                 s.artist, s.title, s.album, s.duration, s.size, s.cover_size AS coverSize
          FROM import_tracks t LEFT JOIN songs s ON s.id = t.song_id
          WHERE t.request_id IN (${reqs.map(() => "?").join(",")}) ORDER BY t.request_id, t.pos`,
@@ -1441,6 +1450,7 @@ app.get("/imports", async (c) => {
             },
           }),
         delivered: !!t.delivered,
+        ...(t.status === "working" && { progress: t.progress }),
       })),
   }));
   const now = Date.now();
@@ -1573,7 +1583,7 @@ app.post("/spot/claim", async (c) => {
     // Qualquer música do próprio pedido (curta ou longa), na ordem da lista.
     const own = await db
       .prepare(
-        `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+        `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
          WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
                      WHERE t.status = 'queued' AND r.user_id = ? ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
          RETURNING id, request_id AS requestId, meta`,
@@ -1590,7 +1600,7 @@ app.post("/spot/claim", async (c) => {
   // Ele pega na hora, sem esperar a vez: nenhum outro celular pode baixar essa.
   const mine = helper ? null : await db
     .prepare(
-      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
                    WHERE t.status = 'queued' AND r.user_id = ? AND ${LONG_TRACK}
                    ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
@@ -1615,7 +1625,7 @@ app.post("/spot/claim", async (c) => {
   // Uma música de cada link por vez (a 1ª de cada, depois a 2ª...): um link grande não segura os outros.
   const track = await db
     .prepare(
-      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?
+      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
                    WHERE t.status = 'queued' AND NOT ${LONG_TRACK} ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
        RETURNING id, request_id AS requestId, meta`,
@@ -1631,6 +1641,18 @@ app.post("/spot/claim", async (c) => {
 
 /** Faixa que se sabe ter mais de 13 minutos (a duração vem do link ou de quem já tentou baixar). */
 const LONG_TRACK = `COALESCE(json_extract(t.meta, '$.duration'), 0) > ${MAX_SONG_SECONDS}`;
+
+/** Quanto do download já andou (0 a 100): quem pediu vê a barra andar. */
+app.post("/spot/progress/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const body = await c.req.json<{ device: string; progress: number }>();
+  const device = checkDevice(body.device);
+  const progress = Math.max(0, Math.min(99, Math.round(Number(body.progress) || 0)));
+  await c.env.DB.prepare("UPDATE import_tracks SET progress = ? WHERE id = ? AND device = ? AND status = 'working'")
+    .bind(progress, id, device)
+    .run();
+  return c.json({ ok: true });
+});
 
 /** O celular parou de ajudar (pausou a música, saiu do app ou do Wi-Fi): a vez passa na hora. */
 app.post("/spot/leave", async (c) => {
@@ -1769,21 +1791,109 @@ app.get("/search/tracks", async (c) => {
     fail(502, "A busca não respondeu agora. Tente de novo ou cole um link.");
   }
   if (!res.ok) fail(502, "A busca não respondeu agora. Tente de novo ou cole um link.");
-  const dz = await res.json<{
-    data?: { id?: number; title?: string; readable?: boolean; duration?: number; link?: string; artist?: { name?: string }; album?: { title?: string; cover_medium?: string } }[];
-  }>();
-  const tracks: TrackSearchHit[] = (dz.data ?? [])
-    .filter((t) => t.id && t.title && t.readable !== false)
-    .map((t) => ({
-      id: String(t.id),
-      title: t.title!,
-      artist: t.artist?.name ?? "",
-      album: t.album?.title ?? "",
-      duration: t.duration ?? 0,
-      cover: t.album?.cover_medium ?? null,
-      url: `https://www.deezer.com/track/${t.id}`,
-    }));
-  return c.json({ tracks });
+  const dz = await res.json<{ data?: DeezerTrack[] }>();
+  return c.json({ tracks: deezerHits(dz.data) });
+});
+
+// ---------------- Descobrir ----------------
+// Músicas que a pessoa ainda não tem, vindas só do Deezer (as paradas e os artistas
+// parecidos). Nada aqui olha o catálogo do servidor: ninguém fica sabendo se uma
+// música já existia. Pedir uma delas é um pedido normal pelo link do Deezer.
+
+/** Paradas do Deezer (playlists dos editores, que não dependem do país de quem pergunta). */
+const DISCOVER_LISTS: [key: string, name: string, playlist: number][] = [
+  ["brasil", "Em alta no Brasil", 1111141961],
+  ["mundo", "Em alta no mundo", 3155776842],
+  ["sertanejo", "Sertanejo", 5207214368],
+  ["funk", "Funk", 9743264302],
+  ["pagode", "Pagode", 1335664985],
+  ["forro", "Forró e piseiro", 6880421184],
+  ["gospel", "Gospel", 2532050928],
+  ["pop", "Pop", 1310668095],
+  ["trap", "Rap e trap", 5656652602],
+  ["internacional", "Internacional", 948759923],
+  ["rock", "Rock nacional", 9268293682],
+  ["mpb", "MPB", 556502217],
+  ["eletronica", "Eletrônica", 6275031904],
+];
+
+type DeezerTrack = {
+  id?: number;
+  title?: string;
+  readable?: boolean;
+  duration?: number;
+  preview?: string;
+  artist?: { name?: string };
+  album?: { title?: string; cover_medium?: string };
+};
+
+const deezerHit = (t: DeezerTrack): TrackSearchHit => ({
+  id: String(t.id),
+  title: t.title!,
+  artist: t.artist?.name ?? "",
+  album: t.album?.title ?? "",
+  duration: t.duration ?? 0,
+  cover: t.album?.cover_medium ?? null,
+  url: `https://www.deezer.com/track/${t.id}`,
+  ...(t.preview && { preview: true }),
+});
+
+const deezerHits = (data: DeezerTrack[] | undefined) => (data ?? []).filter((t) => t.id && t.title && t.readable !== false).map(deezerHit);
+
+/** GET no Deezer guardado no cache da Cloudflare (as paradas mudam uma vez por dia). */
+async function deezerCached<T>(path: string, seconds: number): Promise<T> {
+  const url = `https://api.deezer.com${path}`;
+  const cache = (caches as unknown as { default: Cache }).default;
+  const key = new Request(url);
+  const hit = await cache.match(key);
+  if (hit) return hit.json<T>();
+  let res: Response;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  } catch {
+    fail(502, "O Descobrir não respondeu agora. Tente de novo daqui a pouco.");
+  }
+  if (!res.ok) fail(502, "O Descobrir não respondeu agora. Tente de novo daqui a pouco.");
+  const body = await res.text();
+  if (/"error"\s*:/.test(body.slice(0, 40))) fail(502, "O Descobrir não respondeu agora. Tente de novo daqui a pouco.");
+  await cache.put(key, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `max-age=${seconds}` } }));
+  return JSON.parse(body) as T;
+}
+
+app.get("/discover/lists", (c) => c.json({ lists: DISCOVER_LISTS.map(([key, name]) => ({ key, name }) satisfies DiscoverList) }));
+
+app.get("/discover/list/:key", async (c) => {
+  const list = DISCOVER_LISTS.find(([key]) => key === c.req.param("key"));
+  if (!list) fail(404, "Lista não encontrada");
+  const dz = await deezerCached<{ data?: DeezerTrack[] }>(`/playlist/${list[2]}/tracks?limit=50`, 6 * 60 * 60);
+  return c.json({ key: list[0], name: list[1], tracks: deezerHits(dz.data) });
+});
+
+/** As mais famosas de um artista (pelo nome) e artistas parecidos. */
+app.get("/discover/artist", async (c) => {
+  const name = text(c.req.query("name"), 120);
+  if (name.length < 2) fail(400, "Artista inválido");
+  const found = await deezerCached<{ data?: { id?: number; name?: string }[] }>(`/search/artist?limit=1&q=${encodeURIComponent(name)}`, 7 * 24 * 60 * 60);
+  const artist = found.data?.[0];
+  if (!artist?.id) return c.json({ artist: name, tracks: [], related: [] } satisfies DiscoverArtist);
+  const [top, related] = await Promise.all([
+    deezerCached<{ data?: DeezerTrack[] }>(`/artist/${artist.id}/top?limit=15`, 24 * 60 * 60),
+    deezerCached<{ data?: { name?: string }[] }>(`/artist/${artist.id}/related?limit=6`, 7 * 24 * 60 * 60).catch(() => ({ data: [] })),
+  ]);
+  return c.json({
+    artist: artist.name ?? name,
+    tracks: deezerHits(top.data),
+    related: (related.data ?? []).map((a) => a.name ?? "").filter(Boolean),
+  } satisfies DiscoverArtist);
+});
+
+/** Prévia de 30 segundos (o link do Deezer expira em minutos: pede um novo na hora). */
+app.get("/discover/preview/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^\d{1,15}$/.test(id)) fail(400, "Música inválida");
+  const t = await deezerCached<DeezerTrack>(`/track/${id}`, 10 * 60);
+  if (!t.preview) fail(404, "Essa música não tem prévia");
+  return c.json({ url: t.preview });
 });
 
 app.get("/lookup/artist", async (c) => {

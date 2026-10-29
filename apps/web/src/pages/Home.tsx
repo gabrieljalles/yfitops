@@ -24,9 +24,9 @@ export function HomePage() {
     return (
       <div className="page welcome">
         <h1>Sua estante está vazia</h1>
-        <p className="muted">Envie suas músicas. Elas são criptografadas no seu aparelho antes de subir para a nuvem.</p>
-        <button className="primary" onClick={() => navigate("/enviar")}>
-          <Icon name="upload" size={18} /> Enviar músicas
+        <p className="muted">Peça músicas pelo nome ou por um link, ou veja as que estão em alta, em Descobrir.</p>
+        <button className="primary" onClick={() => navigate("/descobrir")}>
+          <Icon name="compass" size={18} /> Descobrir músicas
         </button>
       </div>
     );

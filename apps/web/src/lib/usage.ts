@@ -11,7 +11,7 @@ export interface CloudUsage {
 
 export const usageStore = createStore<CloudUsage | null>(null);
 
-/** Busca de novo no servidor (ao abrir Ajustes/Enviar e depois de cada leva de envios). */
+/** Busca de novo no servidor (ao abrir Ajustes/Descobrir e depois de cada leva de envios). */
 export async function refreshUsage() {
   try {
     usageStore.set(await api.json<CloudUsage>("/blobs"));

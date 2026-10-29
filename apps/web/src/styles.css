@@ -2392,3 +2392,175 @@ select {
   flex: 1;
   min-width: 0;
 }
+
+/* ---------- Descobrir ---------- */
+
+/* Etapa do pedido ("Na fila", "Baixando 45%", "Pronta"), ao lado do nome. */
+.stage {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 99px;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.stage.working {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+}
+.stage.done {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* Barra do pedido: mais grossa; listrada andando enquanto baixa, pulsando na fila. */
+.progress.big {
+  height: 8px;
+  margin-top: 0;
+}
+.progress.big > div {
+  transition: width 0.8s ease;
+}
+.progress.working > div {
+  background-image: linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--accent-text) 28%, transparent) 25%,
+    transparent 25%,
+    transparent 50%,
+    color-mix(in srgb, var(--accent-text) 28%, transparent) 50%,
+    color-mix(in srgb, var(--accent-text) 28%, transparent) 75%,
+    transparent 75%
+  );
+  background-size: 16px 16px;
+  animation: progress-stripes 0.9s linear infinite;
+}
+.progress.waiting > div {
+  min-width: 18px;
+  animation: progress-wait 1.6s ease-in-out infinite;
+}
+@keyframes progress-stripes {
+  to {
+    background-position: 16px 0;
+  }
+}
+@keyframes progress-wait {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress.working > div,
+  .progress.waiting > div {
+    animation: none;
+  }
+}
+.request.arrived {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.link.left {
+  align-self: flex-start;
+}
+
+.discover {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  margin-top: 8px;
+}
+.discover section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.discover-artist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.discover-artist + .discover-artist {
+  margin-top: 10px;
+}
+.discover-artist h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+/* Gêneros numa linha só, rolando para o lado (no celular não quebram em três linhas). */
+.chips.scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.chips.scroll::-webkit-scrollbar {
+  display: none;
+}
+.link.more {
+  align-self: center;
+  margin-top: 4px;
+}
+
+/* Músicas para pedir: a capa toca a prévia de 30 segundos. */
+.tracks.hits li {
+  gap: 8px;
+  padding-right: 6px;
+}
+.tracks.hits li.previewing {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.hit-n {
+  width: 22px;
+  flex: none;
+  text-align: right;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.hit-cover {
+  position: relative;
+  flex: none;
+  display: grid;
+  border-radius: 6px;
+}
+.hit-cover:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.hit-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.45);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.hit-cover:hover .hit-play,
+.hit-cover:focus-visible .hit-play,
+li.previewing .hit-play {
+  opacity: 1;
+}
+/* Sem mouse (celular): o botão de play fica sempre à vista, mais discreto. */
+@media (hover: none) {
+  .hit-play {
+    opacity: 1;
+    background: rgb(0 0 0 / 0.3);
+  }
+}
+.chip.static {
+  cursor: default;
+}
+
+/* Busca no topo da Biblioteca. */
+.library-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}

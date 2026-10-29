@@ -130,16 +130,31 @@ try {
   await enterSignupCode(helper);
   await helper.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
   await helper.goto(URL + "#/ajustes");
-  await page.goto(URL + "#/enviar");
-  await page.getByPlaceholder("cole um link").fill(LINK);
-  await page.getByRole("button", { name: "pedir", exact: true }).click();
+  await page.goto(URL + "#/descobrir");
+  await page.getByPlaceholder("Nome da música ou link").fill(LINK);
+  await page.locator(".link-import").getByRole("button", { name: "pedir", exact: true }).click();
   await page.locator(".request").waitFor();
-  console.log("   pedido:", await page.locator(".request .track-sub").first().innerText());
+  console.log("   pedido:", await page.locator(".request .stage").first().innerText(), "·", await page.locator(".request .track-sub").first().innerText());
+  await page.locator(".request .progress.big").waitFor();
+  console.log("   barra de progresso ✓");
   await shot("03-pedido");
-  // O card some quando a música chegou na biblioteca (a tela confere a cada 20 s).
-  await page.locator(".request").waitFor({ state: "detached", timeout: 240000 });
+  // Pronta: o card vira "chegou na sua biblioteca", com o botão de tocar.
+  await page.locator(".request.arrived").waitFor({ timeout: 240000 });
   console.log("   música pedida chegou ✓");
   await shot("04-enviado");
+
+  step("descobrir: em alta e prévia");
+  await page.getByRole("heading", { name: "Em alta" }).waitFor();
+  await page.locator(".discover .tracks.hits li").first().waitFor({ timeout: 20000 });
+  await page.locator(".chips.scroll .chip", { hasText: "Funk" }).click();
+  await page.locator(".discover .tracks.hits li").first().waitFor({ timeout: 20000 });
+  console.log("   em alta:", await page.locator(".discover .tracks.hits li").count(), "músicas ✓");
+  const preview = page.waitForResponse((r) => r.url().includes("/api/discover/preview/"), { timeout: 15000 });
+  await page.locator(".discover .hit-cover:not([disabled])").first().click();
+  if (!(await preview).ok()) throw new Error("a prévia não respondeu");
+  console.log("   prévia ✓");
+  await shot("04b-descobrir");
+  await page.locator(".discover li.previewing .hit-cover").click();
 
   step("biblioteca e tocar");
   await page.goto(URL + "#/biblioteca");
@@ -164,11 +179,13 @@ try {
   await page.keyboard.press("Escape");
 
   step("buscar por tag e por texto");
-  await page.goto(URL + "#/buscar");
-  await page.getByPlaceholder(/Música, artista/).fill(SONG.slice(0, 10).toLowerCase());
+  await page.goto(URL + "#/biblioteca");
+  await page.getByPlaceholder(/Buscar música/).fill(SONG.slice(0, 10).toLowerCase());
   await page.locator(".tracks li").first().waitFor();
-  await page.getByPlaceholder(/Música, artista/).fill("");
-  await page.locator(".chip", { hasText: "#acustico" }).click();
+  await page.getByPlaceholder(/Buscar música/).fill("");
+  await page.locator(".tabs button", { hasText: "Tags" }).click();
+  await page.locator(".tag-list button", { hasText: "#acustico" }).click();
+  await page.locator(".library-search .chip.on", { hasText: "#acustico" }).waitFor();
   await page.locator(".tracks li").first().waitFor();
   console.log("   busca ✓");
   await shot("07-busca");
@@ -231,6 +248,8 @@ try {
   step("tocar de novo e baixar não pedem a música outra vez");
   const before = [...audioRequests.values()].reduce((a, b) => a + b, 0);
   await page.goto(URL + "#/biblioteca");
+  // A Biblioteca lembra a aba: a busca por tag deixou aberta a de Tags.
+  await page.locator(".tabs button", { hasText: "Músicas" }).click();
   await page.locator(".track-main").first().click();
   await page.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
   const after = [...audioRequests.values()].reduce((a, b) => a + b, 0);
@@ -245,6 +264,13 @@ try {
   await page.goto(URL + "#/ajustes");
   await page.waitForTimeout(800);
   await shot("12-celular-ajustes");
+  await page.goto(URL + "#/descobrir");
+  await page.locator(".discover .tracks.hits li").first().waitFor({ timeout: 20000 });
+  await shot("12b-celular-descobrir");
+  await page.goto(URL + "#/biblioteca");
+  await page.waitForTimeout(800);
+  await shot("12c-celular-biblioteca");
+  if ((await page.evaluate(() => document.documentElement.scrollWidth)) > 390) throw new Error("a tela passou da largura do celular");
 
   step("sair e entrar de novo (outro aparelho)");
   const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -271,9 +297,9 @@ try {
   await p3.getByLabel("Repita a senha").fill("senha-do-amigo");
   await enterSignupCode(p3);
   await p3.getByText("Sua estante está vazia").waitFor({ timeout: 30000 });
-  await p3.goto(URL + "#/buscar");
+  await p3.goto(URL + "#/biblioteca");
   const searched = p3.waitForResponse((r) => r.url().includes("/api/songs/search"), { timeout: 5000 }).catch(() => null);
-  await p3.getByPlaceholder(/Música, artista/).fill(SONG.toLowerCase());
+  await p3.getByPlaceholder(/Buscar música/).fill(SONG.toLowerCase());
   if (await searched) throw new Error("a busca perguntou ao catálogo sem permissão");
   await p3.waitForTimeout(1500);
   if (await p3.locator(".catalog-results").count()) throw new Error("catálogo apareceu sem permissão");

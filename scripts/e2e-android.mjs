@@ -129,9 +129,9 @@ try {
   step("o computador pede um link; o app no emulador baixa");
   const desk = await (await pc.newContext({ viewport: { width: 1200, height: 800 } })).newPage();
   await signup(desk, `pede-${run}@teste.com`, URL);
-  await desk.goto(URL + "#/enviar");
-  await desk.getByPlaceholder("cole um link").fill(LINK);
-  await desk.getByRole("button", { name: "pedir", exact: true }).click();
+  await desk.goto(URL + "#/descobrir");
+  await desk.getByPlaceholder("Nome da música ou link").fill(LINK);
+  await desk.locator(".link-import").getByRole("button", { name: "pedir", exact: true }).click();
   // Álbum/playlist pergunta se cria a playlist; vídeo único vai direto.
   const asPlaylist = desk.getByRole("button", { name: "pedir e criar a playlist" });
   await Promise.race([asPlaylist.click().catch(() => {}), desk.locator(".request").waitFor()]);
@@ -178,7 +178,7 @@ try {
   const service = () => (/KeepAliveService/.test(adb("shell", "dumpsys", "activity", "services", "dev.yfitops.app")) ? "rodando" : "parado");
   console.log("    serviço antes de tocar:", service());
   // Uma música do catálogo (a que o próprio celular baixou) entra na biblioteca dele e toca.
-  await phone.goto(base + "#/buscar");
+  await phone.goto(base + "#/biblioteca");
   await phone.locator('input[type="search"]').fill(process.env.QUEUE_SEARCH ?? "Singular");
   await phone.getByTitle("Adicionar e tocar").first().click({ timeout: 30000 });
   // O player usa "new Audio()" fora da página: quem diz se está tocando é o botão Pausar

@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Cover } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
@@ -7,21 +7,21 @@ import { libraryStore } from "../lib/library";
 import { sessionStore } from "../lib/session";
 import { useStore } from "../lib/observable";
 import { playList } from "../lib/player";
-import { allTags, buildIndex } from "../lib/search";
+import { buildIndex } from "../lib/search";
 import { formatTime } from "../lib/tracks";
 import { attempt } from "../lib/ui";
 import type { SongInfo, Track } from "@yfitops/core";
 
-export function SearchPage({ initialTag }: { initialTag?: string }) {
+/**
+ * Resultados da busca da Biblioteca: o texto (título, artista, álbum) e as tags
+ * escolhidas. Para quem o administrador liberou, também as músicas do servidor.
+ */
+export function SearchResults({ query, tags }: { query: string; tags: string[] }) {
   const lib = useStore(libraryStore);
   const canSeeCatalog = Boolean(useStore(sessionStore)?.catalog);
-  const [q, setQ] = useState("");
-  const [tags, setTags] = useState<string[]>(initialTag ? [initialTag] : []);
-  const query = useDeferredValue(q);
 
   const entries = useMemo((): [string, Track][] => Object.entries(lib.tracks), [lib.tracks]);
   const index = useMemo(() => buildIndex(entries), [entries]);
-  const tagList = useMemo(() => allTags(entries.map(([, t]) => t)), [entries]);
 
   const results = useMemo(() => {
     const byId = new Map(entries);
@@ -31,35 +31,12 @@ export function SearchPage({ initialTag }: { initialTag?: string }) {
     return ids;
   }, [query, tags, index, entries]);
 
-  const toggleTag = (t: string) => setTags((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
-
   return (
-    <div className="page">
-      <input
-        className="search-input"
-        type="search"
-        placeholder="Música, artista, álbum ou #tag"
-        autoFocus
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
-      {tagList.length > 0 && (
-        <div className="chips">
-          {tagList.map((t) => (
-            <button key={t} className={`chip${tags.includes(t) ? " on" : ""}`} onClick={() => toggleTag(t)}>
-              #{t}
-            </button>
-          ))}
-        </div>
-      )}
-      {query.trim() || tags.length ? (
-        <TrackList ids={results} empty={query.trim().length >= 2 ? "Nada na sua biblioteca." : "Nada encontrado."} />
-      ) : (
-        <p className="muted empty">Busque por qualquer coisa ou escolha tags acima.</p>
-      )}
+    <>
+      <TrackList ids={results} empty={query.trim().length >= 2 ? "Nada na sua biblioteca." : "Nada encontrado."} />
       {/* Músicas do servidor: só para quem o administrador liberou. */}
       {!tags.length && canSeeCatalog && <CatalogResults query={query} />}
-    </div>
+    </>
   );
 }
 
