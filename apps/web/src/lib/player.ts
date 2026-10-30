@@ -4,6 +4,7 @@ import { getTrack, recordPlay } from "./library";
 import { createStore } from "./observable";
 import { prefsStore } from "./prefs";
 import { isExpired, sessionStore } from "./session";
+import { BLOCKED_MESSAGE, isBlocked, isUnlocking, unlockAudio, unlockOnTouch } from "./unlock";
 
 export interface PlayerState {
   queue: string[];
@@ -39,6 +40,8 @@ export const playerStore = createStore<PlayerState>({
  */
 const decks = [new Audio(), new Audio()];
 for (const d of decks) d.preload = "auto";
+// Safari: destrava os dois decks no primeiro toque (ver unlock.ts).
+unlockOnTouch(decks);
 let audio = decks[0];
 const otherDeck = () => (audio === decks[0] ? decks[1] : decks[0]);
 
@@ -259,7 +262,9 @@ async function loadIndex(index: number, autoplay = true, crossfade = 0) {
           ? "Sem conexão e a música não está baixada"
           : (e as Error)?.name === "OperationError"
             ? "Não foi possível abrir este arquivo (chave não confere)"
-            : (e as Error)?.message || "Não foi possível tocar esta música",
+            : isBlocked(e)
+              ? BLOCKED_MESSAGE
+              : (e as Error)?.message || "Não foi possível tocar esta música",
       });
     }
   } finally {
@@ -294,6 +299,7 @@ export function playList(ids: string[], start = 0) {
     index = 0;
   }
   set({ queue });
+  unlockAudio(audio); // ainda no toque: a música só chega depois
   void loadIndex(index);
 }
 
@@ -312,6 +318,7 @@ export function addToQueue(ids: string[]) {
 }
 
 export function jumpTo(index: number) {
+  unlockAudio(audio);
   void loadIndex(index);
 }
 
@@ -425,7 +432,8 @@ function onTimeUpdate() {
 // Os dois decks escutam os mesmos eventos, mas só o ativo mexe no estado: o que
 // está saindo numa transição termina ("ended"/"pause") sem afetar a música nova.
 for (const deck of decks) {
-  const active = (fn: () => void) => () => deck === audio && fn();
+  // O silêncio de destravar (Safari) não é música: não mexe no estado.
+  const active = (fn: () => void) => () => deck === audio && !isUnlocking(deck) && fn();
   deck.addEventListener("timeupdate", active(onTimeUpdate));
   deck.addEventListener("durationchange", active(() => set({ duration: audio.duration || 0 })));
   deck.addEventListener("play", active(() => set({ playing: true })));

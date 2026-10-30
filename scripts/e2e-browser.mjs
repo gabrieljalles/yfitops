@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 // Teste ponta a ponta no navegador. Com o Worker local rodando (npm run dev:server):
 //   npm run e2e            (capturas em ./e2e-shots)
+//   SAFARI=1 npm run e2e   (com a regra de som do Safari: tocar só a partir de um toque)
 const OUT = process.argv[2] ?? "e2e-shots";
 mkdirSync(OUT, { recursive: true });
 const URL = process.env.APP_URL ?? "http://127.0.0.1:8787/";
@@ -58,6 +59,23 @@ const helperBrowser = await chromium.launch({ executablePath: CHROME, args: ["--
 skipInstallPrompt(browser);
 skipInstallPrompt(helperBrowser);
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+// SAFARI=1: imita a regra do Safari (iPhone): um <audio> só toca se o primeiro play()
+// dele vier no instante de um toque; depois de uma espera, é recusado com o mesmo erro.
+if (process.env.SAFARI) {
+  await ctx.addInitScript(() => {
+    let gesture = false;
+    for (const e of ["click", "touchend", "keydown"]) {
+      window.addEventListener(e, () => ((gesture = true), setTimeout(() => (gesture = false), 0)), true);
+    }
+    const allowed = new WeakSet();
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      if (gesture) allowed.add(this);
+      if (!allowed.has(this)) return Promise.reject(new DOMException("play() can only be initiated by a user gesture.", "NotAllowedError"));
+      return play.call(this);
+    };
+  });
+}
 const page = await ctx.newPage();
 const logs = [];
 page.on("console", (m) => (m.type() === "error" || m.type() === "warning") && logs.push(`[${m.type()}] ${m.text()}`));

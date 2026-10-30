@@ -2,6 +2,7 @@ import { api } from "./api";
 import { createStore } from "./observable";
 import { playerStore, toggle } from "./player";
 import { toast } from "./ui";
+import { BLOCKED_MESSAGE, isBlocked, isUnlocking, unlockAudio } from "./unlock";
 
 // ---------------------------------------------------------------------------
 // Prévia de 30 segundos (Deezer) das músicas do Descobrir: ouvir antes de pedir.
@@ -23,8 +24,9 @@ function element(): HTMLAudioElement {
   if (audio) return audio;
   audio = new Audio();
   audio.preload = "none";
-  audio.addEventListener("ended", () => previewStore.set({ id: null, loading: false }));
-  audio.addEventListener("playing", () => previewStore.set((s) => ({ ...s, loading: false })));
+  // O silêncio de destravar (Safari) não é a prévia.
+  audio.addEventListener("ended", () => !isUnlocking(audio!) && previewStore.set({ id: null, loading: false }));
+  audio.addEventListener("playing", () => !isUnlocking(audio!) && previewStore.set((s) => ({ ...s, loading: false })));
   // A música voltou a tocar (estava pausada e passou a tocar): a prévia para. Só na
   // virada: logo depois do pause() que a prévia pede, o player ainda diz "tocando"
   // por um instante, e isso não pode desligar a prévia que acabou de começar.
@@ -47,6 +49,7 @@ export async function togglePreview(id: string) {
   const a = element();
   if (previewStore.get().id === id) return stopPreview();
   a.pause();
+  unlockAudio(a); // ainda no toque: o link da prévia só chega depois
   previewStore.set({ id, loading: true });
   if (playerStore.get().playing) toggle();
   try {
@@ -58,6 +61,6 @@ export async function togglePreview(id: string) {
   } catch (e) {
     if (previewStore.get().id !== id) return;
     stopPreview();
-    toast((e as Error).message || "Não deu para tocar a prévia", "error");
+    toast(isBlocked(e) ? BLOCKED_MESSAGE : (e as Error).message || "Não deu para tocar a prévia", "error");
   }
 }
