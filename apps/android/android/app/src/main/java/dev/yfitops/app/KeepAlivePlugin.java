@@ -10,6 +10,8 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.Settings;
+import android.net.Uri;
 import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -35,6 +37,8 @@ public class KeepAlivePlugin extends Plugin {
     private boolean askedNotifications = false;
     /** Celular ajudante ligado: Wi-Fi e processador acordados o tempo todo. */
     private boolean helper = false;
+    /** Segundo plano (Wi-Fi e carregando): ajuda a fila com o app fechado na tela. */
+    private boolean background = false;
 
     @Override
     public void load() {
@@ -130,11 +134,64 @@ public class KeepAlivePlugin extends Plugin {
         } catch (Exception e) {
             // O sistema pode recusar (app em segundo plano): tenta de novo quando o app abrir.
         }
-        lock(on, 0);
+        lock(on || background, 0);
+        boolean keep = on || background;
         WebView web = getBridge().getWebView();
-        if (Build.VERSION.SDK_INT >= 26) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !on));
+        if (Build.VERSION.SDK_INT >= 26) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !keep));
         // Bateria sem economia e "aparecer sobre outros apps" (para abrir sozinho).
         if (on) Helper.askMissing(getContext());
+        call.resolve();
+    }
+
+    /**
+     * Segundo plano (desde o build 6): no Wi-Fi e carregando, o app segue ajudando a
+     * fila com a tela desligada e sem música. Mesmo serviço da música, com uma
+     * notificação discreta; não abre sozinho (isso é só do celular ajudante).
+     */
+    @PluginMethod
+    public void background(PluginCall call) {
+        boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
+        if (on == background) {
+            call.resolve();
+            return;
+        }
+        background = on;
+        Intent intent = new Intent(getContext(), KeepAliveService.class).putExtra("background", on);
+        try {
+            if (on) ContextCompat.startForegroundService(getContext(), intent);
+            else if (KeepAliveService.instance != null) getContext().startService(intent);
+        } catch (Exception e) {
+            // O sistema pode recusar (app já no fundo e sem a permissão de bateria).
+        }
+        if (!helper) lock(on, 0);
+        WebView web = getBridge().getWebView();
+        if (Build.VERSION.SDK_INT >= 26 && !helper) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !on));
+        call.resolve();
+    }
+
+    /** A pessoa já deixou o app funcionar em segundo plano (bateria sem restrição)? */
+    @PluginMethod
+    public void backgroundAllowed(PluginCall call) {
+        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        JSObject out = new JSObject();
+        out.put("allowed", pm.isIgnoringBatteryOptimizations(getContext().getPackageName()));
+        call.resolve(out);
+    }
+
+    /** Pede as notificações e a bateria sem restrição (a tela do próprio Android). */
+    @PluginMethod
+    public void allowBackground(PluginCall call) {
+        askNotifications();
+        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        if (!pm.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+            Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getContext().getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                getContext().startActivity(i);
+            } catch (Exception e) {
+                // Alguns celulares não têm essa tela: segue sem.
+            }
+        }
         call.resolve();
     }
 
@@ -143,8 +200,8 @@ public class KeepAlivePlugin extends Plugin {
     @SuppressWarnings("deprecation")
     public void busy(PluginCall call) {
         boolean on = Boolean.TRUE.equals(call.getBoolean("on", false));
-        // No modo ajudante os dois já ficam acordados o tempo todo.
-        if (!helper) lock(on, 15 * 60 * 1000L);
+        // No modo ajudante e em segundo plano os dois já ficam acordados o tempo todo.
+        if (!helper && !background) lock(on, 15 * 60 * 1000L);
         call.resolve();
     }
 

@@ -4,7 +4,20 @@ import { artistFromChannel, splitArtistTitle } from "./artist";
 import { findInCatalog } from "./catalog";
 import { makeCover, publishForQueue } from "./importer";
 import { addLocalTrack, getTrack } from "./library";
-import { canSpot, deviceId, holdAwake, nativeHelper, nowPlaying, onNativeAction, onWifi, watchNetwork } from "./native";
+import {
+  BACKGROUND_BUILD,
+  canSpot,
+  deviceId,
+  holdAwake,
+  nativeBackground,
+  nativeBuild,
+  nativeHelper,
+  nowPlaying,
+  onNativeAction,
+  onWifi,
+  watchCharging,
+  watchNetwork,
+} from "./native";
 import { createStore } from "./observable";
 import { currentTrackId, next, playerStore, prev, seek, toggle } from "./player";
 import { sessionStore } from "./session";
@@ -19,6 +32,8 @@ import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from 
 //   - no Wi-Fi: baixa para todo mundo, com o app aberto na tela ou tocando
 //     música (aí vale com a tela desligada). Pausou a música, ou saiu do app
 //     sem música: para na hora, e o que estava baixando volta para a fila;
+//   - no Wi-Fi e carregando (app desde o build 6): segue baixando em segundo
+//     plano, com a tela desligada e sem música (notificação discreta "Yfitops");
 //   - nos dados móveis: só os pedidos da própria pessoa, e só com o app aberto
 //     na tela (quem baixa para os outros não gasta dados móveis);
 //   - celular ajudante (ligado em Ajustes, só pelo administrador): baixa o
@@ -61,6 +76,11 @@ export const spotStore = createStore<SpotState>({ capable: false, active: false,
 const patch = (p: Partial<SpotState>) => spotStore.set((s) => ({ ...s, ...p }));
 
 let wifi = false;
+let charging = false;
+/** O app instalado sabe ficar em segundo plano (build 6 ou mais novo). */
+let backgroundCapable = false;
+/** Segundo plano ligado na parte nativa. */
+let background = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let running = false;
 let started = false;
@@ -77,6 +97,7 @@ function blocker(): string {
   const visible = document.visibilityState === "visible";
   if (spotStore.get().helper && wifi) return "";
   if (!wifi && !visible) return "fora do Wi-Fi, só baixa os seus pedidos e com o app aberto";
+  if (background) return "";
   if (!visible && !playerStore.get().playing) return "só com o app aberto ou tocando música";
   return "";
 }
@@ -114,6 +135,12 @@ function schedule(ms: number) {
 
 /** Algo mudou (tela, música, Wi-Fi, ajuste): reavalia logo. */
 function kick() {
+  // No Wi-Fi e carregando: segue ajudando com o app no fundo (o celular ajudante já fica ligado).
+  const bg = backgroundCapable && wifi && charging && !spotStore.get().helper;
+  if (bg !== background) {
+    background = bg;
+    nativeBackground(bg);
+  }
   const why = blocker();
   patch({ active: !why, reason: why });
   // Parado esperando trabalho (o servidor segura a resposta): avisa já, para ele não mandar nada.
@@ -326,6 +353,14 @@ export function startSpot() {
     });
   refreshWifi();
   watchNetwork(refreshWifi);
+  void nativeBuild().then((b) => {
+    backgroundCapable = b >= BACKGROUND_BUILD;
+    kick();
+  });
+  watchCharging((c) => {
+    charging = c;
+    kick();
+  });
   document.addEventListener("visibilitychange", kick);
   sessionStore.subscribe(kick);
   // Comandos do Android: notificação, carro, fone Bluetooth e tela bloqueada.

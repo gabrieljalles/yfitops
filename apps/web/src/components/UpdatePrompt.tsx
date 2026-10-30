@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NATIVE_BUILD, nativeBuild } from "../lib/native";
+import { allowBackground, backgroundAllowed, NATIVE_BUILD, nativeBuild } from "../lib/native";
 import { spotStore } from "../lib/spot";
 import { Vinyl } from "./Cover";
 
@@ -101,9 +101,7 @@ export function NativeUpdatePrompt() {
           <Vinyl seed="" label="var(--brand)" />
         </div>
         <h2 id="native-update-title">Atualize o app</h2>
-        <p className="muted">
-          Tem uma versão nova do app do Yfitops. Com ela, os botões do carro, do fone e da tela bloqueada passam a funcionar.
-        </p>
+        <p className="muted">Tem uma versão nova do app do Yfitops.</p>
         <ol className="install-steps">
           <li>Toque em <strong>Baixar a versão nova</strong>. O Chrome vai abrir e baixar o arquivo.</li>
           <li>Abra o arquivo baixado e toque em <strong>Atualizar</strong>.</li>
@@ -113,6 +111,63 @@ export function NativeUpdatePrompt() {
           Baixar a versão nova
         </a>
         <button className="link" onClick={() => setOld(false)}>
+          depois
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Quando a pessoa tocou em "depois" (pergunta de novo em 3 dias). */
+const BACKGROUND_LATER_KEY = "yfitops.background-later";
+const ASK_AGAIN = 3 * 24 * 60 * 60_000;
+
+/**
+ * App Android novo sem a bateria liberada: pede para deixar o app funcionar em
+ * segundo plano (a tela do próprio Android vem em seguida).
+ */
+export function BackgroundPrompt() {
+  const [ask, setAsk] = useState(false);
+  useEffect(() => {
+    let later = 0;
+    try {
+      later = Number(localStorage.getItem(BACKGROUND_LATER_KEY)) || 0;
+    } catch {
+      /* sem armazenamento: pergunta */
+    }
+    if (Date.now() - later < ASK_AGAIN) return;
+    void backgroundAllowed().then((allowed) => allowed === false && setAsk(true));
+  }, []);
+  if (!ask) return null;
+  const close = () => setAsk(false);
+  return (
+    <div className="update-backdrop" role="dialog" aria-modal="true" aria-labelledby="background-title">
+      <div className="update-card">
+        <div className="update-disc">
+          <Vinyl seed="" label="var(--brand)" />
+        </div>
+        <h2 id="background-title">Permita o Yfitops em segundo plano</h2>
+        <p className="muted">Na próxima tela, toque em Permitir.</p>
+        <button
+          className="primary"
+          onClick={() => {
+            close();
+            void allowBackground();
+          }}
+        >
+          Permitir
+        </button>
+        <button
+          className="link"
+          onClick={() => {
+            try {
+              localStorage.setItem(BACKGROUND_LATER_KEY, String(Date.now()));
+            } catch {
+              /* sem armazenamento: pergunta de novo na próxima vez */
+            }
+            close();
+          }}
+        >
           depois
         </button>
       </div>

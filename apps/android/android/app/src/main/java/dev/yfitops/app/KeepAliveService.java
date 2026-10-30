@@ -42,6 +42,8 @@ public class KeepAliveService extends Service {
     private long durationMs = 0;
     /** Celular ajudante (24 horas): o serviço fica ligado mesmo sem música. */
     private boolean helper = false;
+    /** Segundo plano (Wi-Fi e carregando): o serviço fica ligado mesmo sem música, sem abrir sozinho. */
+    private boolean background = false;
     /** Tem música na fila (senão, no modo ajudante, a notificação diz "ajudando"). */
     private boolean media = false;
 
@@ -121,7 +123,13 @@ public class KeepAliveService extends Service {
         if (intent != null && intent.hasExtra("helper")) {
             // Liga ou desliga o modo ajudante; a música (se houver) continua como está.
             helper = intent.getBooleanExtra("helper", false);
-            if (!helper && !media) {
+            if (!helper && !media && !background) {
+                shutdown();
+                return START_NOT_STICKY;
+            }
+        } else if (intent != null && intent.hasExtra("background")) {
+            background = intent.getBooleanExtra("background", false);
+            if (!helper && !media && !background) {
                 shutdown();
                 return START_NOT_STICKY;
             }
@@ -165,7 +173,7 @@ public class KeepAliveService extends Service {
      */
     void clearMedia() {
         media = false;
-        if (!helper) {
+        if (!helper && !background) {
             shutdown();
             return;
         }
@@ -199,6 +207,17 @@ public class KeepAliveService extends Service {
     private Notification buildNotification() {
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent openPi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        if (!media && !helper) {
+            // Segundo plano: discreta, só o nome do app.
+            return new NotificationCompat.Builder(this, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_vinyl)
+                .setContentTitle("Yfitops")
+                .setContentIntent(openPi)
+                .setOngoing(true)
+                .setSilent(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .build();
+        }
         if (!media) {
             return new NotificationCompat.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_vinyl)

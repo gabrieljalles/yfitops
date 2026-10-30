@@ -108,6 +108,12 @@ interface KeepAlivePlugin {
   busy(opts: { on: boolean }): Promise<void>;
   /** Celular ajudante (24 horas): app vivo, Wi-Fi e processador acordados mesmo sem música. Desde o build 4. */
   helper(opts: { on: boolean }): Promise<void>;
+  /** Segundo plano (Wi-Fi e carregando): app vivo sem música, sem abrir sozinho. Desde o build 6. */
+  background(opts: { on: boolean }): Promise<void>;
+  /** A bateria do app está sem restrição? Desde o build 6. */
+  backgroundAllowed(): Promise<{ allowed: boolean }>;
+  /** Pede as notificações e a bateria sem restrição. Desde o build 6. */
+  allowBackground(): Promise<void>;
   /** "play", "pause", "next", "prev" ou "seek:<segundos>" (notificação, carro, fone, tela bloqueada). */
   addListener(event: "action", cb: (e: { action: string }) => void): Promise<{ remove: () => Promise<void> }>;
 }
@@ -118,7 +124,7 @@ const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
  * Versão do app Android que o site espera. Suba junto com o versionCode do APK
  * quando a parte nativa mudar: quem tiver um app mais antigo é avisado para instalar o novo.
  */
-export const NATIVE_BUILD = 4;
+export const NATIVE_BUILD = 6;
 
 /**
  * Desde este build, o celular ajudante abre sozinho quando o celular liga. Não
@@ -170,6 +176,43 @@ export function onNativeAction(cb: (action: string) => void) {
 export function holdAwake(on: boolean) {
   if (!isNativeApp()) return;
   void KeepAlive.busy({ on }).catch(() => {});
+}
+
+/** Desde este build, o app ajuda a fila em segundo plano (no Wi-Fi e carregando). */
+export const BACKGROUND_BUILD = 6;
+
+/** Liga ou desliga o segundo plano na parte nativa (app antigo: não faz nada). */
+export function nativeBackground(on: boolean) {
+  if (!isNativeApp()) return;
+  void KeepAlive.background({ on }).catch(() => {});
+}
+
+/** A pessoa já deixou o app funcionar em segundo plano? (app antigo ou navegador: null) */
+export async function backgroundAllowed(): Promise<boolean | null> {
+  if (!isNativeApp() || (await nativeBuild()) < BACKGROUND_BUILD) return null;
+  try {
+    return (await KeepAlive.backgroundAllowed()).allowed;
+  } catch {
+    return null;
+  }
+}
+
+/** Abre a tela do Android que pede para o app funcionar em segundo plano. */
+export async function allowBackground() {
+  await KeepAlive.allowBackground().catch(() => {});
+}
+
+/** O celular está carregando? Avisa quando muda. (sem como saber: nunca) */
+export function watchCharging(cb: (charging: boolean) => void) {
+  const nav = navigator as Navigator & { getBattery?: () => Promise<EventTarget & { charging: boolean }> };
+  if (!nav.getBattery) return cb(false);
+  void nav
+    .getBattery()
+    .then((b) => {
+      cb(b.charging);
+      b.addEventListener("chargingchange", () => cb(b.charging));
+    })
+    .catch(() => cb(false));
 }
 
 /** Liga ou desliga o modo "celular ajudante" na parte nativa (app antigo: não faz nada). */

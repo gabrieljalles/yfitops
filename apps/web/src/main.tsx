@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
-import { NativeUpdatePrompt, UpdatePrompt } from "./components/UpdatePrompt";
+import { BackgroundPrompt, NativeUpdatePrompt, UpdatePrompt } from "./components/UpdatePrompt";
 import { setImportLink } from "./lib/imports";
 import { applyPrefs } from "./lib/prefs";
 import { restoreSession } from "./lib/session";
@@ -36,5 +36,6 @@ createRoot(document.getElementById("root")!).render(
     <App />
     <UpdatePrompt />
     <NativeUpdatePrompt />
+    <BackgroundPrompt />
   </StrictMode>,
 );
