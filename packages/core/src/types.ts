@@ -122,6 +122,8 @@ export interface SignupRequest {
   publicKey: string;
   /** Chave privada de compartilhamento cifrada com a chave enc do usuário. */
   wrappedPrivateKey: string;
+  /** Código do link de indicação por onde a pessoa chegou (opcional). */
+  ref?: string;
 }
 
 /** Cobrança e permissões da conta (no login e em GET /auth/me). */
@@ -133,6 +135,32 @@ export interface AccountBilling {
   paymentInfo?: string;
   /** Pode buscar no catálogo inteiro (liberado pelo administrador). */
   catalog?: true;
+  /** Está no programa de indicação (liberado pelo administrador). */
+  referral?: true;
+  /** Mensalidade dessa pessoa (centavos), quando definida. */
+  priceCents?: number;
+}
+
+/** Em que pé está uma pessoa indicada (para quem indicou). */
+export type ReferralStage =
+  /** Esperando o administrador aprovar. */
+  | "pending"
+  /** Aprovada, ainda sem pagar a primeira mensalidade. */
+  | "unpaid"
+  /** Pagou: o valor fica guardado por 30 dias (estorno, cancelamento). */
+  | "waiting"
+  /** Passaram os 30 dias: falta o administrador pagar. */
+  | "available"
+  | "paid"
+  | "canceled";
+
+/** GET /referral: o link e as pessoas indicadas. */
+export interface ReferralInfo {
+  code: string;
+  /** Quanto ganha por indicado que pagar (centavos). */
+  rewardCents: number;
+  people: { email: string; since: number; stage: ReferralStage; amountCents?: number; availableAt?: number }[];
+  totals: { waitingCents: number; availableCents: number; paidCents: number };
 }
 
 export interface SessionResponse extends AccountBilling {

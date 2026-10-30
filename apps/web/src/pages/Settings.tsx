@@ -15,7 +15,8 @@ import {
   type Quality,
 } from "../lib/blobs";
 import { api } from "../lib/api";
-import { formatDate, formatPhone } from "../lib/billing";
+import type { ReferralInfo, ReferralStage } from "@yfitops/core";
+import { brl, formatDate, formatPhone, inviteLink } from "../lib/billing";
 import { confirmDialog, promptDialog } from "../lib/dialog";
 import { libraryStore, sync } from "../lib/library";
 import { useStore } from "../lib/observable";
@@ -27,7 +28,7 @@ import { setHelper, spotStore } from "../lib/spot";
 import { StorageBar } from "../components/StorageBar";
 import { logout, refreshAccount, sessionStore } from "../lib/session";
 import { formatBytes } from "../lib/tracks";
-import { attempt } from "../lib/ui";
+import { attempt, toast } from "../lib/ui";
 
 export function SettingsPage() {
   const session = useStore(sessionStore);
@@ -84,6 +85,8 @@ export function SettingsPage() {
           </button>
         </p>
       </section>
+
+      {session?.referral && <ReferralSettings />}
 
       <section>
         <h2>Aparência</h2>
@@ -353,6 +356,81 @@ function Segmented<T extends string>({
  * Android ajuda: não há como desligar. Nos outros aparelhos a seção não aparece
  * (quem só pede não precisa saber como a música é baixada).
  */
+/** Em que pé está cada pessoa indicada. */
+function stageText(p: ReferralInfo["people"][number]): string {
+  const value = p.amountCents ? brl(p.amountCents) : "";
+  const text: Record<ReferralStage, string> = {
+    pending: "esperando aprovação",
+    unpaid: "entrou, ainda não pagou",
+    waiting: `pagou · ${value} liberado em ${formatDate(p.availableAt ?? 0)}`,
+    available: `${value} a receber`,
+    paid: `${value} recebido`,
+    canceled: "não contou (pagamento cancelado)",
+  };
+  return text[p.stage];
+}
+
+/**
+ * Programa de indicação (só para quem foi liberado): o link pessoal, quem chegou por
+ * ele e quanto tem a receber. A divulgação é de pessoa para pessoa.
+ */
+function ReferralSettings() {
+  const [info, setInfo] = useState<ReferralInfo | null>(null);
+  useEffect(() => {
+    void attempt(async () => setInfo(await api.json<ReferralInfo>("/referral")));
+  }, []);
+  if (!info) return null;
+  const link = inviteLink(info.code);
+  const message = `Te convidei para o Yfitops, o app de música que eu uso: ${link}`;
+  const { waitingCents, availableCents, paidCents } = info.totals;
+  return (
+    <section className="referral">
+      <h2>Indicações</h2>
+      <p className="muted small">
+        Mande o seu link só para quem você conhece, numa conversa. Quem entrar por ele espera a aprovação, e você ganha{" "}
+        {info.rewardCents ? <strong>{brl(info.rewardCents)}</strong> : "um valor"} por pessoa que pagar a primeira mensalidade. O valor fica
+        guardado por 30 dias e depois é pago a você.
+      </p>
+      <div className="invite-link">
+        <code>{link}</code>
+        <span className="row wrap">
+          <button
+            className="chip"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(link);
+                toast("Link copiado");
+              } catch {
+                await promptDialog({ title: "Seu link de convite", input: { value: link }, confirm: "ok" });
+              }
+            }}
+          >
+            copiar link
+          </button>
+          <a className="chip ghost" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer">
+            mandar no WhatsApp
+          </a>
+        </span>
+      </div>
+      <p className="small">
+        A receber: <strong>{brl(availableCents)}</strong> · guardado: {brl(waitingCents)} · já recebido: {brl(paidCents)}
+      </p>
+      {info.people.length ? (
+        <ul className="plain referral-people">
+          {info.people.map((p, i) => (
+            <li key={i} className="small">
+              <span>{p.email}</span>
+              <span className={`muted${p.stage === "available" ? " tone-text-ok" : ""}`}>{stageText(p)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted small">Ninguém entrou pelo seu link ainda.</p>
+      )}
+    </section>
+  );
+}
+
 function HelpSettings() {
   const spot = useStore(spotStore);
   const admin = !!useStore(sessionStore)?.admin;

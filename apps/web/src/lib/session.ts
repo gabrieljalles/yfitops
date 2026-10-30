@@ -66,7 +66,28 @@ const billingOf = (b: AccountBilling): AccountBilling => ({
   ...(b.phone !== undefined && { phone: b.phone }),
   ...(b.paymentInfo !== undefined && { paymentInfo: b.paymentInfo }),
   ...(b.catalog && { catalog: true as const }),
+  ...(b.referral && { referral: true as const }),
+  ...(b.priceCents !== undefined && { priceCents: b.priceCents }),
 });
+
+/** Código do convite por onde a pessoa chegou (guardado até criar a conta). */
+const REF_KEY = "yfitops.ref";
+
+export function saveInvite(code: string) {
+  try {
+    localStorage.setItem(REF_KEY, code.trim().toUpperCase());
+  } catch {
+    /* sem armazenamento: o cadastro só não conta como indicação */
+  }
+}
+
+export function invitedBy(): string {
+  try {
+    return localStorage.getItem(REF_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 /** Acesso vencido? Administrador e sessões antigas (sem data) nunca vencem. */
 export const isExpired = (s: Session | null | undefined, now = Date.now()) =>
@@ -121,7 +142,7 @@ export async function refreshAccount() {
     return; // offline: fica como estava
   }
   pendingRequestsStore.set(info.pendingRequests ?? 0);
-  const { admin: _old, paidUntil: _p, phone: _ph, paymentInfo: _pi, catalog: _c, ...rest } = s;
+  const { admin: _old, paidUntil: _p, phone: _ph, paymentInfo: _pi, catalog: _c, referral: _r, priceCents: _pc, ...rest } = s;
   const next: Session = { ...rest, status: info.status, ...(info.admin && { admin: true as const }), ...billingOf(info) };
   if (JSON.stringify(next) !== JSON.stringify(s)) {
     await kvSet("session", next);
@@ -171,8 +192,14 @@ export async function signup(email: string, password: string, code: string, phon
       escrowMasterKey: await eciesSeal(escrowPublicKey, mk),
       publicKey: kp.publicKey,
       wrappedPrivateKey: toB64(await seal(user.enc, kp.privateKey)),
+      ...(invitedBy() && { ref: invitedBy() }),
     },
   });
+  try {
+    localStorage.removeItem(REF_KEY);
+  } catch {
+    /* tanto faz */
+  }
   await finishLogin(res, mk);
 }
 

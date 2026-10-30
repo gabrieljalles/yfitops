@@ -3,12 +3,12 @@ import type { SongInfo } from "@yfitops/core";
 import { Cover } from "../components/Cover";
 import { Icon } from "../components/Icon";
 import { api } from "../lib/api";
-import { daysLeft, dueText, formatDate, formatPhone, WARN_DAYS } from "../lib/billing";
+import { brl, brlInput, daysLeft, dueText, formatDate, formatPhone, inviteLink, parseBrl, WARN_DAYS } from "../lib/billing";
 import { coverRef } from "../lib/catalog";
-import { confirmDialog } from "../lib/dialog";
+import { confirmDialog, promptDialog } from "../lib/dialog";
 import { refreshAccount } from "../lib/session";
 import { formatBytes, formatTime, musicas } from "../lib/tracks";
-import { attempt } from "../lib/ui";
+import { attempt, toast } from "../lib/ui";
 import { refreshUsage } from "../lib/usage";
 
 // Painel administrativo. Só é carregado para quem é administrador (o servidor
@@ -19,6 +19,7 @@ interface AdminUser {
   email: string;
   status: "approved" | "pending";
   createdAt: number;
+  /** Músicas que essa pessoa pediu (não quem baixou) e o espaço delas. */
   songs: number;
   bytes: number;
   lastLogin: number | null;
@@ -29,6 +30,22 @@ interface AdminUser {
   paidUntil: number;
   /** Pode buscar no catálogo inteiro. */
   catalog: boolean;
+  /** Mensalidade combinada com a pessoa (centavos); null = a padrão. */
+  priceCents: number | null;
+  /** Está no programa de indicação. */
+  referral: boolean;
+  referralCode: string | null;
+  /** E-mail de quem indicou. */
+  referredBy: string | null;
+  /** Quantas pessoas chegaram pelo link dela. */
+  referrals: number;
+}
+
+interface Prices {
+  /** Mensalidade padrão (centavos). */
+  priceCents: number;
+  /** Quanto quem indica ganha por indicado que pagar (centavos). */
+  rewardCents: number;
 }
 
 interface Overview {
@@ -36,30 +53,55 @@ interface Overview {
   /** Contas que ainda não abriram o app desde a faxina de músicas sem dono (até lá, ela não apaga nada). */
   ownersWaiting: string[];
   users: AdminUser[];
+  prices: Prices;
 }
 
 const MONTH_OPTIONS = [1, 2, 3, 6, 12];
 
+/** Mensalidade que vale para a pessoa. */
+const priceOf = (u: AdminUser, p: Prices) => u.priceCents ?? p.priceCents;
+
+const months = (n: number) => `${n} ${n === 1 ? "mês" : "meses"}`;
+
+/** Copia um texto; sem permissão, mostra para copiar à mão. */
+async function copyText(text: string, what: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${what} copiado`);
+  } catch {
+    await promptDialog({ title: what, input: { value: text }, confirm: "ok" });
+  }
+}
+
 /** Link do WhatsApp com a mensagem de cobrança pronta (o Pix você manda na conversa). */
-function whatsappLink(u: AdminUser): string | null {
+function whatsappLink(u: AdminUser, price: number): string | null {
   if (!u.phone) return null;
   const when = formatDate(u.paidUntil);
+  const value = price ? ` São ${brl(price)} por mês.` : "";
   const text =
     u.paidUntil < Date.now()
-      ? `Oi! Seu acesso ao Yfitops venceu em ${when}. Quer renovar? Te mando o Pix por aqui.`
-      : `Oi! Seu acesso ao Yfitops vence em ${when}. Quer renovar? Te mando o Pix por aqui.`;
+      ? `Oi! Seu acesso ao Yfitops venceu em ${when}. Quer renovar?${value} Te mando o Pix por aqui.`
+      : `Oi! Seu acesso ao Yfitops vence em ${when}. Quer renovar?${value} Te mando o Pix por aqui.`;
   return `https://wa.me/${u.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
 }
 
-/** Cobrança de uma pessoa: até quando está pago, liberar meses, bloquear, cobrar e o acesso ao catálogo. */
-function Billing({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> }) {
-  const [months, setMonths] = useState(1);
+/**
+ * Cobrança de uma pessoa: mensalidade, registrar pagamento (libera os meses), bloquear,
+ * cobrar, o acesso ao catálogo e o programa de indicação.
+ */
+function Billing({ u, prices, onChange }: { u: AdminUser; prices: Prices; onChange: () => Promise<void> }) {
+  const price = priceOf(u, prices);
+  const [count, setCount] = useState(1);
+  const [amount, setAmount] = useState(brlInput(price));
   const [catalog, setCatalog] = useState(u.catalog);
+  const [referral, setReferral] = useState(u.referral);
   const [busy, setBusy] = useState(false);
+  // O valor já vem com a mensalidade vezes os meses; dá para mudar (desconto, cortesia = 0).
+  useEffect(() => setAmount(brlInput(price * count)), [price, count]);
   const now = Date.now();
   const expired = u.paidUntil < now;
   const tone = expired ? "error" : daysLeft(u.paidUntil, now) <= WARN_DAYS ? "warn" : "ok";
-  const wa = whatsappLink(u);
+  const wa = whatsappLink(u, price);
 
   const run = (fn: () => Promise<unknown>, ok: string) =>
     attempt(async () => {
@@ -72,30 +114,54 @@ function Billing({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> 
       }
     }, ok);
 
+  const register = () => {
+    const cents = parseBrl(amount);
+    if (cents === null) return toast("Valor inválido. Use, por exemplo, 25,90", "error");
+    void run(
+      () => api.json(`/admin/users/${u.id}/access`, { method: "POST", json: { months: count, amountCents: cents } }),
+      cents ? `${brl(cents)} registrado: ${months(count)} para ${u.email}` : `${months(count)} de cortesia para ${u.email}`,
+    );
+  };
+
+  const changePrice = async () => {
+    const v = await promptDialog({
+      title: `Mensalidade de ${u.email}`,
+      message: `Quanto essa pessoa paga por mês. Deixe vazio para usar a padrão (${brl(prices.priceCents)}).`,
+      input: { value: u.priceCents === null ? "" : brlInput(u.priceCents), placeholder: brlInput(prices.priceCents) },
+      confirm: "salvar",
+    });
+    if (v === null) return;
+    const priceCents = v.trim() ? parseBrl(v) : null;
+    if (v.trim() && priceCents === null) return toast("Valor inválido. Use, por exemplo, 25,90", "error");
+    void run(() => api.json(`/admin/users/${u.id}/price`, { method: "PUT", json: { priceCents } }), "Mensalidade salva");
+  };
+
   return (
     <div className="admin-billing">
       <small className={`tone-text-${tone}`}>
         {expired ? `vencido em ${formatDate(u.paidUntil)}` : `pago até ${formatDate(u.paidUntil)} (vence ${dueText(u.paidUntil, now)})`}
       </small>
+      <small className="muted">
+        mensalidade <strong className="money">{price ? brl(price) : "sem valor"}</strong>
+        {u.priceCents === null && " (padrão)"}{" "}
+        <button className="link" disabled={busy} onClick={() => void changePrice()}>
+          mudar
+        </button>
+      </small>
       <span className="row wrap admin-actions">
-        <select value={months} disabled={busy} onChange={(e) => setMonths(Number(e.target.value))} aria-label="Meses a liberar">
+        <select value={count} disabled={busy} onChange={(e) => setCount(Number(e.target.value))} aria-label="Meses a liberar">
           {MONTH_OPTIONS.map((m) => (
             <option key={m} value={m}>
-              {m} {m === 1 ? "mês" : "meses"}
+              {months(m)}
             </option>
           ))}
         </select>
-        <button
-          className="chip"
-          disabled={busy}
-          onClick={() =>
-            void run(
-              () => api.json(`/admin/users/${u.id}/access`, { method: "POST", json: { months } }),
-              `${months} ${months === 1 ? "mês liberado" : "meses liberados"} para ${u.email}`,
-            )
-          }
-        >
-          liberar
+        <label className="admin-amount">
+          R$
+          <input inputMode="decimal" value={amount} disabled={busy} onChange={(e) => setAmount(e.target.value)} aria-label="Valor recebido" />
+        </label>
+        <button className="chip" disabled={busy} onClick={register}>
+          registrar pagamento
         </button>
         {wa && (
           <a className="chip ghost" href={wa} target="_blank" rel="noreferrer">
@@ -119,6 +185,8 @@ function Billing({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> 
             bloquear
           </button>
         )}
+      </span>
+      <span className="row wrap admin-actions">
         <label className="admin-toggle" title="Deixa essa pessoa buscar todas as músicas do servidor">
           <input
             type="checkbox"
@@ -135,17 +203,60 @@ function Billing({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> 
           />
           vê o catálogo
         </label>
+        <label className="admin-toggle" title="Dá a essa pessoa um link de convite: ela ganha por quem entrar e pagar">
+          <input
+            type="checkbox"
+            checked={referral}
+            disabled={busy}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setReferral(on);
+              void run(
+                () => api.json(`/admin/users/${u.id}/referral`, { method: "POST", json: { on } }),
+                on ? `${u.email} agora pode indicar` : `${u.email} saiu das indicações`,
+              );
+            }}
+          />
+          pode indicar
+        </label>
+        {u.referral && u.referralCode && (
+          <button className="link" onClick={() => void copyText(inviteLink(u.referralCode!), "Link de convite")}>
+            copiar link de convite
+          </button>
+        )}
       </span>
     </div>
   );
 }
 
-type AdminSong = SongInfo & { createdAt: number; uploadedBy: string | null };
+type AdminSong = SongInfo & { createdAt: number; requestedBy: string | null };
 
 const date = (ms: number | null) => (ms ? new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", year: "numeric" }) : "nunca");
 
+type Tab = "pessoas" | "dinheiro" | "sistema";
+const TABS: [Tab, string][] = [
+  ["pessoas", "Pessoas"],
+  ["dinheiro", "Dinheiro"],
+  ["sistema", "Sistema"],
+];
+
 export default function AdminPage() {
   const [data, setData] = useState<Overview | null>(null);
+  const [tab, setTab] = useState<Tab>(() => {
+    try {
+      return (sessionStorage.getItem("adminTab") as Tab) || "pessoas";
+    } catch {
+      return "pessoas";
+    }
+  });
+  const choose = (t: Tab) => {
+    setTab(t);
+    try {
+      sessionStorage.setItem("adminTab", t);
+    } catch {
+      /* só não lembra a aba */
+    }
+  };
 
   const load = useCallback(async () => {
     setData(await api.json<Overview>("/admin/overview"));
@@ -157,11 +268,53 @@ export default function AdminPage() {
   }, [load]);
 
   if (!data) return <div className="page muted">Carregando…</div>;
-  const pending = data.users.filter((u) => u.status === "pending");
-  const people = data.users.filter((u) => u.status !== "pending");
-  const pct = Math.min(100, (data.usage.bytes / data.usage.quota) * 100);
+  const pending = data.users.filter((u) => u.status === "pending").length;
 
-  const approve = (u: AdminUser) => attempt(async () => (await api.json(`/admin/users/${u.id}/approve`, { method: "POST" }), load()), `${u.email} pode entrar`);
+  return (
+    <div className="page settings admin">
+      <div className="tabs admin-tabs" role="tablist">
+        {TABS.map(([t, label]) => (
+          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "on" : ""} onClick={() => choose(t)}>
+            {label}
+            {t === "pessoas" && pending > 0 && <span className="dot">{pending}</span>}
+          </button>
+        ))}
+      </div>
+      {tab === "pessoas" && <People data={data} onChange={load} />}
+      {tab === "dinheiro" && <Money prices={data.prices} onChange={load} />}
+      {tab === "sistema" && (
+        <>
+          <Cloud data={data} onChange={load} />
+          <Consumption />
+          <CatalogAdmin onChange={load} />
+        </>
+      )}
+    </div>
+  );
+}
+
+type PeopleFilter = "todas" | "vencendo" | "vencidas" | "indicadoras";
+
+/** Pedidos de acesso (com quem indicou) e as pessoas, com busca e filtros. */
+function People({ data, onChange }: { data: Overview; onChange: () => Promise<void> }) {
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<PeopleFilter>("todas");
+  const pending = data.users.filter((u) => u.status === "pending");
+  const now = Date.now();
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const people = data.users
+    .filter((u) => u.status !== "pending")
+    .filter((u) => {
+      const text = `${u.email} ${u.phone ?? ""} ${formatPhone(u.phone)} ${u.referredBy ?? ""}`.toLowerCase();
+      if (!words.every((w) => text.includes(w))) return false;
+      if (filter === "vencidas") return !u.admin && u.paidUntil < now;
+      if (filter === "vencendo") return !u.admin && u.paidUntil >= now && daysLeft(u.paidUntil, now) <= WARN_DAYS;
+      if (filter === "indicadoras") return u.referral;
+      return true;
+    });
+
+  const approve = (u: AdminUser) =>
+    attempt(async () => (await api.json(`/admin/users/${u.id}/approve`, { method: "POST" }), onChange()), `${u.email} pode entrar`);
 
   /** Para quem esqueceu a senha: o link vai por mensagem (o app não manda e-mail para todos). */
   const resetLink = (u: AdminUser) =>
@@ -187,16 +340,16 @@ export default function AdminPage() {
         ? { title: "Recusar o pedido?", message: `${u.email} não vai conseguir entrar. Se pedir de novo, aparece aqui outra vez.`, confirm: "recusar", danger: true }
         : {
             title: "Tirar o acesso?",
-            message: `A conta de ${u.email} é apagada, com biblioteca e playlists. As músicas que essa pessoa trouxe continuam no catálogo.`,
+            message: `A conta de ${u.email} é apagada, com biblioteca e playlists. As músicas que essa pessoa pediu continuam no catálogo.`,
             confirm: "apagar conta",
             danger: true,
           },
     );
-    if (ok) await attempt(async () => (await api.json(`/admin/users/${u.id}`, { method: "DELETE" }), load()), pendingRequest ? "Pedido recusado" : "Conta apagada");
+    if (ok) await attempt(async () => (await api.json(`/admin/users/${u.id}`, { method: "DELETE" }), onChange()), pendingRequest ? "Pedido recusado" : "Conta apagada");
   };
 
   return (
-    <div className="page settings admin">
+    <>
       <section>
         <h2>Pedidos de acesso</h2>
         {pending.length ? (
@@ -209,6 +362,11 @@ export default function AdminPage() {
                     pediu em {date(u.createdAt)}
                     {u.phone && ` · ${formatPhone(u.phone)}`}
                   </small>
+                  {u.referredBy ? (
+                    <small className="referred-by">indicado por {u.referredBy}</small>
+                  ) : (
+                    <small className="muted">sem indicação</small>
+                  )}
                 </span>
                 <span className="row">
                   <button className="primary" onClick={() => void approve(u)}>
@@ -227,73 +385,331 @@ export default function AdminPage() {
       </section>
 
       <section>
-        <h2>Nuvem</h2>
-        <div className="progress" role="meter" aria-label="Espaço usado" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
-          <div style={{ width: `${pct}%` }} />
+        <h2>Pessoas</h2>
+        <div className="admin-filters">
+          <input className="search-input" type="search" placeholder="E-mail, celular ou quem indicou" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="segmented" role="radiogroup" aria-label="Mostrar">
+            {(["todas", "vencendo", "vencidas", "indicadoras"] as const).map((f) => (
+              <button key={f} role="radio" aria-checked={filter === f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
-        <p className="small">
-          {formatBytes(data.usage.bytes)} de {formatBytes(data.usage.quota)} ({Math.round(pct)}%) · {musicas(data.usage.count)} no catálogo
+        {people.length ? (
+          <ul className="plain admin-list">
+            {people.map((u) => (
+              <li key={u.id}>
+                <span className="admin-who">
+                  <strong>
+                    {u.email}
+                    {u.me && <span className="muted"> (você)</span>}
+                  </strong>
+                  <small className="muted">
+                    {u.phone ? `${formatPhone(u.phone)} · ` : ""}desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · pediu {musicas(u.songs)} (
+                    {formatBytes(u.bytes)})
+                  </small>
+                  {(u.referredBy || u.referral) && (
+                    <small className="referred-by">
+                      {u.referredBy && `indicado por ${u.referredBy}`}
+                      {u.referredBy && u.referral && " · "}
+                      {u.referral && `indicadora · ${u.referrals === 1 ? "1 indicado" : `${u.referrals} indicados`}`}
+                    </small>
+                  )}
+                  {!u.admin && <Billing u={u} prices={data.prices} onChange={onChange} />}
+                </span>
+                <span className="row">
+                  <button className="link" onClick={() => void resetLink(u)}>
+                    link de senha nova
+                  </button>
+                  {!u.admin && (
+                    <button className="link danger" onClick={() => void remove(u, false)}>
+                      tirar acesso
+                    </button>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">Ninguém por aqui.</p>
+        )}
+      </section>
+    </>
+  );
+}
+
+/** Espaço da nuvem e a faxina. */
+function Cloud({ data, onChange }: { data: Overview; onChange: () => Promise<void> }) {
+  const pct = Math.min(100, (data.usage.bytes / data.usage.quota) * 100);
+  return (
+    <section>
+      <h2>Nuvem</h2>
+      <div className="progress" role="meter" aria-label="Espaço usado" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)}>
+        <div style={{ width: `${pct}%` }} />
+      </div>
+      <p className="small">
+        {formatBytes(data.usage.bytes)} de {formatBytes(data.usage.quota)} ({Math.round(pct)}%) · {musicas(data.usage.count)} no catálogo
+      </p>
+      <button
+        className="link"
+        onClick={() =>
+          void attempt(async () => {
+            const r = await api.json<{ abandoned: number; merged: number }>("/admin/tidy", { method: "POST" });
+            await onChange();
+            void refreshUsage();
+            return r;
+          }, "Faxina feita")
+        }
+      >
+        juntar duplicadas agora
+      </button>
+      <p className="muted small">
+        A faxina também roda sozinha todo dia de madrugada. Ela junta duplicadas e apaga músicas que ninguém tem na biblioteca há
+        mais de 3 dias.
+      </p>
+      {data.ownersWaiting.length > 0 && (
+        <p className="small tone-text-warn">
+          Músicas sem dono ainda não são apagadas: falta {data.ownersWaiting.length === 1 ? "esta pessoa abrir" : "estas pessoas abrirem"} o
+          app pelo menos uma vez: {data.ownersWaiting.join(", ")}.
         </p>
-        <button
-          className="link"
-          onClick={() =>
-            void attempt(async () => {
-              const r = await api.json<{ abandoned: number; merged: number }>("/admin/tidy", { method: "POST" });
-              await load();
-              void refreshUsage();
-              return r;
-            }, "Faxina feita")
-          }
-        >
-          juntar duplicadas agora
-        </button>
-        <p className="muted small">
-          A faxina também roda sozinha todo dia de madrugada. Ela junta duplicadas e apaga músicas que ninguém tem na biblioteca há
-          mais de 3 dias.
-        </p>
-        {data.ownersWaiting.length > 0 && (
-          <p className="small tone-text-warn">
-            Músicas sem dono ainda não são apagadas: falta {data.ownersWaiting.length === 1 ? "esta pessoa abrir" : "estas pessoas abrirem"} o
-            app pelo menos uma vez: {data.ownersWaiting.join(", ")}.
-          </p>
+      )}
+    </section>
+  );
+}
+
+// ---------------- Dinheiro ----------------
+
+type RewardStatus = "waiting" | "available" | "paid" | "canceled";
+
+interface MoneyData {
+  thisMonthCents: number;
+  lastMonthCents: number;
+  /** Soma das mensalidades de quem está com o acesso em dia. */
+  expectedCents: number;
+  payingCount: number;
+  payments: { id: string; email: string; amountCents: number; months: number; createdAt: number; refundedAt: number | null }[];
+  referrers: {
+    id: string;
+    email: string;
+    phone: string | null;
+    waitingCents: number;
+    availableCents: number;
+    paidCents: number;
+    items: {
+      email: string;
+      amountCents: number;
+      status: RewardStatus;
+      paidOn: number;
+      availableAt: number;
+      paidAt: number | null;
+      cancelReason: string | null;
+    }[];
+  }[];
+}
+
+function rewardText(r: MoneyData["referrers"][number]["items"][number]): string {
+  switch (r.status) {
+    case "waiting":
+      return `pagou em ${formatDate(r.paidOn)} · libera em ${formatDate(r.availableAt)}`;
+    case "available":
+      return "liberado para pagar";
+    case "paid":
+      return `pago em ${formatDate(r.paidAt ?? 0)}`;
+    case "canceled":
+      return `cancelado (${r.cancelReason ?? "sem motivo"})`;
+  }
+}
+
+/** O que entrou, o que deve entrar, os valores, o que pagar a quem indica e os pagamentos. */
+function Money({ prices, onChange }: { prices: Prices; onChange: () => Promise<void> }) {
+  const [data, setData] = useState<MoneyData | null>(null);
+  const load = useCallback(async () => setData(await api.json<MoneyData>("/admin/money")), []);
+  useEffect(() => {
+    void attempt(load);
+  }, [load]);
+  const reload = async () => {
+    await load();
+    await onChange();
+  };
+
+  const pay = async (r: MoneyData["referrers"][number]) => {
+    const ok = await confirmDialog({
+      title: `Já pagou ${brl(r.availableCents)}?`,
+      message: `Faça o Pix para ${r.email} primeiro. Aqui só fica marcado como pago, e some do "a pagar".`,
+      confirm: "marcar como pago",
+    });
+    if (ok) await attempt(async () => (await api.json(`/admin/referrers/${r.id}/pay`, { method: "POST" }), reload()), "Marcado como pago");
+  };
+
+  const refund = async (p: MoneyData["payments"][number]) => {
+    const ok = await confirmDialog({
+      title: "Estornar este pagamento?",
+      message: `${brl(p.amountCents)} de ${p.email} deixa de contar. Se for o último pagamento dessa pessoa, o vencimento volta para antes dele. Se alguém indicou essa pessoa e ainda não recebeu, a comissão cai.`,
+      confirm: "estornar",
+      danger: true,
+    });
+    if (ok) await attempt(async () => (await api.json(`/admin/payments/${p.id}/refund`, { method: "POST" }), reload()), "Pagamento estornado");
+  };
+
+  return (
+    <>
+      <section>
+        <h2>Resumo</h2>
+        {data ? (
+          <div className="money-cards">
+            <div className="money-card">
+              <small className="muted">Recebido neste mês</small>
+              <strong>{brl(data.thisMonthCents)}</strong>
+            </div>
+            <div className="money-card">
+              <small className="muted">Mês passado</small>
+              <strong>{brl(data.lastMonthCents)}</strong>
+            </div>
+            <div className="money-card">
+              <small className="muted">Por mês, com quem está em dia</small>
+              <strong>{brl(data.expectedCents)}</strong>
+              <small className="muted">{data.payingCount === 1 ? "1 pessoa" : `${data.payingCount} pessoas`}</small>
+            </div>
+          </div>
+        ) : (
+          <p className="muted small">Carregando…</p>
         )}
       </section>
 
-      <Consumption />
+      <PricesForm prices={prices} onSaved={reload} />
 
       <section>
-        <h2>Pessoas</h2>
-        <ul className="plain admin-list">
-          {people.map((u) => (
-            <li key={u.id}>
-              <span className="admin-who">
-                <strong>
-                  {u.email}
-                  {u.me && <span className="muted"> (você)</span>}
-                </strong>
-                <small className="muted">
-                  {u.phone ? `${formatPhone(u.phone)} · ` : ""}desde {date(u.createdAt)} · último acesso {date(u.lastLogin)} · trouxe{" "}
-                  {musicas(u.songs)} ({formatBytes(u.bytes)})
-                </small>
-                {!u.admin && <Billing u={u} onChange={load} />}
-              </span>
-              <span className="row">
-                <button className="link" onClick={() => void resetLink(u)}>
-                  link de senha nova
-                </button>
-                {!u.admin && (
-                  <button className="link danger" onClick={() => void remove(u, false)}>
-                    tirar acesso
-                  </button>
+        <h2>Indicações</h2>
+        <p className="muted small">
+          Quem indica ganha {prices.rewardCents ? brl(prices.rewardCents) : "o valor por indicado"} quando o indicado paga a primeira mensalidade.
+          O valor fica guardado por 30 dias e cai se o pagamento for estornado, a pessoa for bloqueada ou a conta for apagada nesse tempo.
+          Para alguém poder indicar, marque <strong>pode indicar</strong> na pessoa, em Pessoas.
+        </p>
+        {data && data.referrers.length > 0 ? (
+          <ul className="plain admin-list">
+            {data.referrers.map((r) => (
+              <li key={r.id}>
+                <span className="admin-who">
+                  <strong>{r.email}</strong>
+                  <small>
+                    a pagar <strong className={r.availableCents ? "tone-text-ok" : ""}>{brl(r.availableCents)}</strong> · guardado{" "}
+                    {brl(r.waitingCents)} · já pago {brl(r.paidCents)}
+                  </small>
+                  <details className="small">
+                    <summary>ver indicados ({r.items.length})</summary>
+                    <ul className="plain referral-people">
+                      {r.items.map((it, i) => (
+                        <li key={i}>
+                          <span>
+                            {it.email} · {brl(it.amountCents)}
+                          </span>
+                          <span className="muted">{rewardText(it)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </span>
+                {r.availableCents > 0 && (
+                  <span className="row wrap">
+                    {r.phone && (
+                      <a
+                        className="chip ghost"
+                        href={`https://wa.me/${r.phone.replace(/\D/g, "")}?text=${encodeURIComponent(
+                          `Oi! Suas indicações do Yfitops renderam ${brl(r.availableCents)}. Vou te mandar por Pix.`,
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        avisar no WhatsApp
+                      </a>
+                    )}
+                    <button className="primary" onClick={() => void pay(r)}>
+                      marcar como pago
+                    </button>
+                  </span>
                 )}
-              </span>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          data && <p className="muted small">Nenhum indicado pagou ainda.</p>
+        )}
       </section>
 
-      <CatalogAdmin onChange={load} />
-    </div>
+      <section>
+        <h2>Pagamentos</h2>
+        {data && data.payments.length > 0 ? (
+          <ul className="plain admin-list payments">
+            {data.payments.map((p) => (
+              <li key={p.id} className={p.refundedAt ? "refunded" : ""}>
+                <span className="admin-who">
+                  <strong>
+                    {p.amountCents ? brl(p.amountCents) : "cortesia"} <span className="muted">· {months(p.months)}</span>
+                  </strong>
+                  <small className="muted">
+                    {p.email} · {date(p.createdAt)}
+                    {p.refundedAt && ` · estornado em ${date(p.refundedAt)}`}
+                  </small>
+                </span>
+                {!p.refundedAt && (
+                  <button className="link danger" onClick={() => void refund(p)}>
+                    estornar
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          data && <p className="muted small">Nenhum pagamento registrado ainda. Eles aparecem aqui quando você registra um pagamento em Pessoas.</p>
+        )}
+      </section>
+    </>
+  );
+}
+
+/** Mensalidade padrão e valor por indicado. */
+function PricesForm({ prices, onSaved }: { prices: Prices; onSaved: () => Promise<void> }) {
+  const [price, setPrice] = useState(brlInput(prices.priceCents));
+  const [reward, setReward] = useState(brlInput(prices.rewardCents));
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    const priceCents = parseBrl(price);
+    const rewardCents = parseBrl(reward);
+    if (priceCents === null || rewardCents === null) return toast("Valor inválido. Use, por exemplo, 25,90", "error");
+    void attempt(async () => {
+      setBusy(true);
+      try {
+        await api.json("/admin/settings", { method: "PUT", json: { priceCents, rewardCents } });
+        await onSaved();
+      } finally {
+        setBusy(false);
+      }
+    }, "Valores salvos");
+  };
+  return (
+    <section>
+      <h2>Valores</h2>
+      <div className="row wrap admin-prices">
+        <label className="admin-amount">
+          <span>Mensalidade padrão</span>
+          R$
+          <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
+        </label>
+        <label className="admin-amount">
+          <span>Valor por indicado</span>
+          R$
+          <input inputMode="decimal" value={reward} onChange={(e) => setReward(e.target.value)} />
+        </label>
+        <button className="primary" disabled={busy} onClick={save}>
+          salvar
+        </button>
+      </div>
+      <p className="muted small">
+        A mensalidade padrão vale para quem não tem uma combinada (mude em Pessoas → mensalidade → mudar). Mudar o valor por indicado não muda o
+        que já foi ganho.
+      </p>
+    </section>
   );
 }
 
@@ -420,7 +836,7 @@ function CatalogAdmin({ onChange }: { onChange: () => Promise<void> }) {
                 <span className="track-text">
                   <span className="track-title">{s.title}</span>
                   <span className="track-sub">
-                    {s.artist} · {formatTime(s.duration)} · {formatBytes(s.size + s.coverSize)} · {s.uploadedBy ?? "conta apagada"} · {date(s.createdAt)}
+                    {s.artist} · {formatTime(s.duration)} · {formatBytes(s.size + s.coverSize)} · pediu: {s.requestedBy ?? "conta apagada"} · {date(s.createdAt)}
                   </span>
                 </span>
               </div>

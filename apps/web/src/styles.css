@@ -2739,3 +2739,105 @@ li.previewing .hit-play {
     scroll-padding-inline: 16px;
   }
 }
+
+/* ---------------- Painel: abas, dinheiro e indicações ---------------- */
+.admin-tabs {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.admin-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.admin-tabs .dot {
+  margin-left: 0;
+}
+.admin-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+.admin-amount input {
+  width: 84px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.admin-prices {
+  gap: 16px;
+  align-items: flex-end;
+}
+.admin-prices .admin-amount {
+  flex-wrap: wrap;
+}
+.admin-prices .admin-amount span {
+  width: 100%;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.money,
+.money-card strong {
+  font-variant-numeric: tabular-nums;
+}
+.money-cards {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.money-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.money-card strong {
+  font-size: 1.4rem;
+}
+.referred-by {
+  color: var(--accent);
+}
+.admin-list li.refunded strong {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.referral-people {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.referral-people li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.invite-link {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.invite-link code {
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.invite-link a.chip {
+  color: inherit;
+  text-decoration: none;
+}
+.invite-note {
+  margin: 0 0 4px;
+}

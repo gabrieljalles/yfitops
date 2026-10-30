@@ -20,6 +20,8 @@ import {
   type ImportTrackStatus,
   type ItemKind,
   type AccountBilling,
+  type ReferralInfo,
+  type ReferralStage,
   type ResolvedTrack,
   type SpotFailKind,
   type SpotJob,
@@ -119,7 +121,7 @@ async function createSession(c: Ctx, userId: string): Promise<string> {
 
 async function sessionResponse(c: Ctx, userId: string) {
   const u = await c.env.DB.prepare(
-    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status, phone, paid_until, catalog_access FROM users WHERE id = ?",
+    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status, phone, paid_until, catalog_access, referral_on, price_cents FROM users WHERE id = ?",
   )
     .bind(userId)
     .first<Record<string, string> & BillingRow>();
@@ -134,7 +136,7 @@ async function sessionResponse(c: Ctx, userId: string) {
     status: u.status as "approved" | "pending",
     // Só aparece para quem é administrador: para os outros, o campo nem existe.
     ...(isAdmin(c.env, u.email) && { admin: true as const }),
-    ...billing(c.env, u.email, u),
+    ...billing(c.env, u.email, u, await prices(c.env)),
   };
 }
 
@@ -144,16 +146,22 @@ interface BillingRow {
   phone: string | null;
   paid_until: number;
   catalog_access: number;
+  referral_on: number;
+  price_cents: number | null;
 }
 
-/** Vencimento, celular, como pagar e acesso ao catálogo. Administrador nunca vence e sempre vê o catálogo. */
-function billing(env: Env, email: string, u: BillingRow): AccountBilling {
-  if (isAdmin(env, email)) return { phone: u.phone, catalog: true };
+/** Vencimento, celular, como pagar, acesso ao catálogo e indicações. Administrador nunca vence e sempre vê o catálogo. */
+function billing(env: Env, email: string, u: BillingRow, p: { priceCents: number }): AccountBilling {
+  const price = u.price_cents ?? p.priceCents;
+  const referral = u.referral_on ? { referral: true as const } : {};
+  if (isAdmin(env, email)) return { phone: u.phone, catalog: true, ...referral };
   return {
     paidUntil: u.paid_until,
     phone: u.phone,
     paymentInfo: env.PAYMENT_INFO ?? "",
     ...(u.catalog_access ? { catalog: true as const } : {}),
+    ...referral,
+    ...(price > 0 && { priceCents: price }),
   };
 }
 
@@ -304,11 +312,20 @@ app.post("/auth/signup", async (c) => {
 
   const id = randomId();
   const salt = toB64(randomBytes(16));
-  const approved = preApproved(c.env, email);
+  // Veio pelo link de alguém do programa de indicação: guarda quem indicou. Código errado
+  // ou de quem saiu do programa não atrapalha o cadastro, só não conta como indicação.
+  const ref = String(body.ref ?? "").trim().toUpperCase();
+  const referrer = /^[A-Z0-9]{4,12}$/.test(ref)
+    ? await c.env.DB.prepare("SELECT id, email FROM users WHERE referral_code = ? AND referral_on = 1 AND status = 'approved'")
+        .bind(ref)
+        .first<{ id: string; email: string }>()
+    : null;
+  // Indicado sempre espera a aprovação (mesmo com o e-mail em ALLOWED_EMAILS).
+  const approved = isAdmin(c.env, email) || (!referrer && preApproved(c.env, email));
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO users (id, email, phone, paid_until, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at, status, approved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, phone, paid_until, auth_salt, auth_hash, wrapped_master_key, escrow_master_key, public_key, wrapped_private_key, created_at, status, approved_at, referred_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       email,
@@ -324,6 +341,7 @@ app.post("/auth/signup", async (c) => {
       Date.now(),
       approved ? "approved" : "pending",
       approved ? Date.now() : null,
+      referrer?.id ?? null,
     ),
     c.env.DB.prepare("DELETE FROM signup_codes WHERE email = ?").bind(email),
   ]);
@@ -332,7 +350,12 @@ app.post("/auth/signup", async (c) => {
     const base = c.env.APP_URL || new URL(c.req.url).origin;
     for (const admin of emailList(c.env.ADMIN_EMAILS)) {
       c.executionCtx.waitUntil(
-        sendMail(c.env, inbox(c.env, admin), `Pedido de acesso ao Yfitops: ${email}`, `${email} pediu para entrar no Yfitops.\n\nPara aceitar ou recusar: ${base}/#/admin`),
+        sendMail(
+          c.env,
+          inbox(c.env, admin),
+          `Pedido de acesso ao Yfitops: ${email}`,
+          `${email} pediu para entrar no Yfitops${referrer ? ` (indicado por ${referrer.email})` : ""}.\n\nPara aceitar ou recusar: ${base}/#/admin`,
+        ),
       );
     }
   }
@@ -451,7 +474,7 @@ const PENDING_OK = ["/api/auth/me", "/api/auth/logout", "/api/auth/phone"];
  * Com o pagamento vencido, o celular continua ajudando a baixar as músicas que os
  * outros pediram (isso não dá nada para a própria pessoa).
  */
-const EXPIRED_OK = (path: string) => PENDING_OK.includes(path) || path.startsWith("/api/spot/");
+const EXPIRED_OK = (path: string) => PENDING_OK.includes(path) || path.startsWith("/api/spot/") || path === "/api/referral";
 
 app.use("/*", async (c, next) => {
   if (c.req.path.startsWith("/api/auth/") && !PENDING_OK.includes(c.req.path)) return next();
@@ -479,11 +502,11 @@ app.use("/*", async (c, next) => {
 
 /** Situação da conta (o app pergunta de tempos em tempos enquanto espera aprovação). */
 app.get("/auth/me", async (c) => {
-  const row = await c.env.DB.prepare("SELECT status, phone, paid_until, catalog_access FROM users WHERE id = ?")
+  const row = await c.env.DB.prepare("SELECT status, phone, paid_until, catalog_access, referral_on, price_cents FROM users WHERE id = ?")
     .bind(c.get("userId"))
     .first<{ status: string } & BillingRow>();
   if (!row) fail(404, "Conta não encontrada");
-  const info = { status: row.status, ...billing(c.env, c.get("email"), row) };
+  const info = { status: row.status, ...billing(c.env, c.get("email"), row, await prices(c.env)) };
   if (!c.get("admin")) return c.json(info);
   const pending = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE status = 'pending'").first<{ n: number }>();
   return c.json({ ...info, admin: true, pendingRequests: pending?.n ?? 0 });
@@ -1010,6 +1033,130 @@ async function tidyCatalog(env: Env) {
   return { abandoned: stale.length, merged, orphans, waiting };
 }
 
+// ---------------- Preços e indicações ----------------
+
+/** A comissão de um indicado só fica liberada 30 dias depois do pagamento (estorno, cancelamento). */
+const REWARD_HOLD = 30 * DAY;
+
+/** Mensalidade padrão e valor por indicado (centavos; 0 = ainda não definido). */
+async function prices(env: Env): Promise<{ priceCents: number; rewardCents: number }> {
+  const { results } = await env.DB.prepare("SELECT key, value FROM settings WHERE key IN ('price_cents', 'reward_cents')").all<{
+    key: string;
+    value: string;
+  }>();
+  const get = (k: string) => Number(results.find((r) => r.key === k)?.value) || 0;
+  return { priceCents: get("price_cents"), rewardCents: get("reward_cents") };
+}
+
+/** Valor em centavos, de 0 a R$ 10.000. */
+function cents(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 1_000_000) fail(400, "Valor inválido");
+  return n;
+}
+
+/** Começo do mês no horário de Brasília. */
+function monthStart(ms: number): number {
+  const BRT = 3 * 60 * 60 * 1000;
+  const d = new Date(ms - BRT);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) + BRT;
+}
+
+/** Código do link de indicação: 6 letras e números fáceis de ler (sem 0/O nem 1/I). */
+function newReferralCode(): string {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from(randomBytes(6), (b) => abc[b % abc.length]).join("");
+}
+
+interface RewardRow {
+  amount_cents: number;
+  available_at: number;
+  canceled_at: number | null;
+  paid_at: number | null;
+}
+
+const rewardStatus = (r: RewardRow, now: number): Extract<ReferralStage, "waiting" | "available" | "paid" | "canceled"> =>
+  r.canceled_at ? "canceled" : r.paid_at ? "paid" : r.available_at <= now ? "available" : "waiting";
+
+/**
+ * Derruba a comissão (ainda não paga) que alguém ganharia por esse indicado. Bloqueio e
+ * conta apagada só derrubam dentro dos 30 dias; o estorno derruba a do pagamento estornado.
+ */
+function cancelReward(env: Env, referredId: string, reason: string, opts: { onlyWaiting?: boolean; paymentId?: string }) {
+  const now = Date.now();
+  return env.DB.prepare(
+    `UPDATE referral_rewards SET canceled_at = ?, cancel_reason = ?
+     WHERE referred_id = ? AND paid_at IS NULL AND canceled_at IS NULL${opts.onlyWaiting ? " AND available_at > ?" : ""}${opts.paymentId ? " AND payment_id = ?" : ""}`,
+  ).bind(now, reason, referredId, ...(opts.onlyWaiting ? [now] : []), ...(opts.paymentId ? [opts.paymentId] : []));
+}
+
+/**
+ * Primeira mensalidade paga de um indicado: a indicadora ganha o valor fixo, liberado
+ * em 30 dias. Uma vez por indicado (de novo só se a anterior foi cancelada), e só se
+ * ela continua no programa.
+ */
+async function grantReward(env: Env, referred: { id: string; email: string }, referrerId: string, paymentId: string, now: number) {
+  const on = await env.DB.prepare("SELECT 1 FROM users WHERE id = ? AND referral_on = 1").bind(referrerId).first();
+  const { rewardCents } = await prices(env);
+  if (!on || !rewardCents) return;
+  await env.DB.prepare(
+    `INSERT INTO referral_rewards (id, referrer_id, referred_id, referred_email, payment_id, amount_cents, created_at, available_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(referred_id) DO UPDATE SET referrer_id = excluded.referrer_id, payment_id = excluded.payment_id,
+       amount_cents = excluded.amount_cents, created_at = excluded.created_at, available_at = excluded.available_at,
+       canceled_at = NULL, cancel_reason = NULL
+     WHERE referral_rewards.canceled_at IS NOT NULL`,
+  )
+    .bind(randomId(), referrerId, referred.id, referred.email, paymentId, rewardCents, now, now + REWARD_HOLD)
+    .run();
+}
+
+/** Para quem está no programa: o link, quem chegou por ele e quanto tem a receber. */
+app.get("/referral", async (c) => {
+  const me = c.get("userId");
+  const u = await c.env.DB.prepare("SELECT referral_on, referral_code FROM users WHERE id = ?").bind(me).first<{
+    referral_on: number;
+    referral_code: string | null;
+  }>();
+  if (!u?.referral_on || !u.referral_code) fail(404, "Indicações não liberadas para esta conta");
+  const now = Date.now();
+  const [people, rewards, { rewardCents }] = await Promise.all([
+    c.env.DB.prepare("SELECT id, email, status, created_at FROM users WHERE referred_by = ? ORDER BY created_at DESC")
+      .bind(me)
+      .all<{ id: string; email: string; status: string; created_at: number }>(),
+    c.env.DB.prepare(
+      "SELECT referred_id, referred_email, amount_cents, created_at, available_at, canceled_at, paid_at FROM referral_rewards WHERE referrer_id = ?",
+    )
+      .bind(me)
+      .all<RewardRow & { referred_id: string; referred_email: string; created_at: number }>(),
+    prices(c.env),
+  ]);
+  const byId = new Map(rewards.results.map((r) => [r.referred_id, r]));
+  const totals = { waitingCents: 0, availableCents: 0, paidCents: 0 };
+  const entry = (email: string, since: number, r: (RewardRow & { referred_id: string }) | undefined, status: string) => {
+    if (!r) return { email: maskEmail(email), since, stage: status === "pending" ? ("pending" as const) : ("unpaid" as const) };
+    const stage = rewardStatus(r, now);
+    if (stage !== "canceled") totals[`${stage}Cents`] += r.amount_cents;
+    return { email: maskEmail(email), since, stage, amountCents: r.amount_cents, availableAt: r.available_at };
+  };
+  const list: ReferralInfo["people"] = people.results.map((p) => {
+    const r = byId.get(p.id);
+    byId.delete(p.id);
+    return entry(p.email, p.created_at, r, p.status);
+  });
+  // Contas apagadas que já tinham rendido algo continuam na lista.
+  for (const r of byId.values()) list.push(entry(r.referred_email, r.created_at, r, "approved"));
+  return c.json({ code: u.referral_code, rewardCents, people: list, totals } satisfies ReferralInfo);
+});
+
+/**
+ * Quem pediu a música (e não o celular que baixou): a primeira pessoa que pediu pela
+ * fila de links ou pela busca. Sem pedido na fila, foi quem enviou o arquivo.
+ */
+const REQUESTER_SQL = `COALESCE(
+  (SELECT r.user_id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id WHERE t.song_id = s.id ORDER BY r.created_at LIMIT 1),
+  s.uploaded_by)`;
+
 // ---------------- Painel administrativo ----------------
 // Só para ADMIN_EMAILS. Para os outros, estas rotas respondem igual a uma rota
 // que não existe: ninguém fica sabendo que o painel existe.
@@ -1037,6 +1184,10 @@ async function deleteUser(env: Env, id: string) {
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM recovery_tokens WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM signup_codes WHERE email = (SELECT email FROM users WHERE id = ?)").bind(id),
+    // Indicada dentro dos 30 dias: a comissão cai. As indicações que ela fez deixam de contar.
+    cancelReward(env, id, "conta apagada", { onlyWaiting: true }),
+    env.DB.prepare("DELETE FROM referral_rewards WHERE referrer_id = ? AND paid_at IS NULL").bind(id),
+    env.DB.prepare("UPDATE users SET referred_by = NULL WHERE referred_by = ?").bind(id),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id),
   ]);
 }
@@ -1045,8 +1196,11 @@ async function deleteUser(env: Env, id: string) {
 app.get("/admin/overview", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.email, u.status, u.created_at AS createdAt, u.phone, u.paid_until AS paidUntil, u.catalog_access AS catalogAccess,
-            (SELECT COUNT(*) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS songs,
-            (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.uploaded_by = u.id AND s.status = 'ready') AS bytes,
+            u.price_cents AS priceCents, u.referral_on AS referralOn, u.referral_code AS referralCode,
+            (SELECT r.email FROM users r WHERE r.id = u.referred_by) AS referredBy,
+            (SELECT COUNT(*) FROM users r WHERE r.referred_by = u.id) AS referrals,
+            (SELECT COUNT(*) FROM songs s WHERE s.status = 'ready' AND ${REQUESTER_SQL} = u.id) AS songs,
+            (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.status = 'ready' AND ${REQUESTER_SQL} = u.id) AS bytes,
             (SELECT MAX(created_at) FROM sessions WHERE user_id = u.id) AS lastLogin
      FROM users u ORDER BY (u.status = 'pending') DESC, u.created_at DESC`,
   ).all<{
@@ -1057,18 +1211,24 @@ app.get("/admin/overview", async (c) => {
     phone: string | null;
     paidUntil: number;
     catalogAccess: number;
+    priceCents: number | null;
+    referralOn: number;
+    referralCode: string | null;
+    referredBy: string | null;
+    referrals: number;
     songs: number;
     bytes: number;
     lastLogin: number | null;
   }>();
   return c.json({
     usage: await usage(c.env),
+    prices: await prices(c.env),
     paymentInfo: c.env.PAYMENT_INFO ?? "",
     // Faxina de músicas sem dono: só começa quando todos já abriram o app.
     ownersWaiting: await ownersWaiting(c.env),
-    users: results.map(({ catalogAccess, ...u }) => {
+    users: results.map(({ catalogAccess, referralOn, ...u }) => {
       const admin = isAdmin(c.env, u.email);
-      return { ...u, admin, catalog: admin || Boolean(catalogAccess), me: u.id === c.get("userId") };
+      return { ...u, admin, catalog: admin || Boolean(catalogAccess), referral: Boolean(referralOn), me: u.id === c.get("userId") };
     }),
   });
 });
@@ -1087,22 +1247,184 @@ app.post("/admin/users/:id/approve", async (c) => {
 });
 
 /**
- * Libera meses de acesso, contados do vencimento atual (ou de agora, se já venceu),
- * para quem renova antes do fim não perder dias. Com "block", corta o acesso na hora.
+ * Registra um pagamento e libera os meses, contados do vencimento atual (ou de agora,
+ * se já venceu), para quem renova antes do fim não perder dias. Sem valor, cobra a
+ * mensalidade da pessoa vezes os meses; valor 0 é cortesia. Com "block", corta o acesso na hora.
  */
 app.post("/admin/users/:id/access", async (c) => {
   const id = checkId(c.req.param("id"));
-  const { months, block } = await c.req.json<{ months?: number; block?: boolean }>();
-  const u = await c.env.DB.prepare("SELECT paid_until FROM users WHERE id = ? AND status = 'approved'").bind(id).first<{ paid_until: number }>();
+  const { months, block, amountCents } = await c.req.json<{ months?: number; block?: boolean; amountCents?: number }>();
+  const u = await c.env.DB.prepare("SELECT email, paid_until, price_cents, referred_by FROM users WHERE id = ? AND status = 'approved'")
+    .bind(id)
+    .first<{ email: string; paid_until: number; price_cents: number | null; referred_by: string | null }>();
   if (!u) fail(404, "Conta não encontrada");
-  let paidUntil = Date.now();
-  if (!block) {
-    const n = Number(months);
-    if (!Number.isInteger(n) || n < 1 || n > 36) fail(400, "Escolha de 1 a 36 meses");
-    paidUntil = addMonths(Math.max(Date.now(), u.paid_until), n);
+  const now = Date.now();
+  if (block) {
+    // Bloqueada dentro dos 30 dias: quem indicou não ganha por ela.
+    await c.env.DB.batch([
+      c.env.DB.prepare("UPDATE users SET paid_until = ? WHERE id = ?").bind(now, id),
+      cancelReward(c.env, id, "acesso bloqueado", { onlyWaiting: true }),
+    ]);
+    return c.json({ paidUntil: now });
   }
-  await c.env.DB.prepare("UPDATE users SET paid_until = ? WHERE id = ?").bind(paidUntil, id).run();
+  const n = Number(months);
+  if (!Number.isInteger(n) || n < 1 || n > 36) fail(400, "Escolha de 1 a 36 meses");
+  const amount = amountCents === undefined ? (u.price_cents ?? (await prices(c.env)).priceCents) * n : cents(amountCents);
+  const paidUntil = addMonths(Math.max(now, u.paid_until), n);
+  const paymentId = randomId();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET paid_until = ? WHERE id = ?").bind(paidUntil, id),
+    c.env.DB.prepare(
+      "INSERT INTO payments (id, user_id, email, amount_cents, months, prev_paid_until, paid_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(paymentId, id, u.email, amount, n, u.paid_until, paidUntil, now),
+  ]);
+  if (amount > 0 && u.referred_by) await grantReward(c.env, { id, email: u.email }, u.referred_by, paymentId, now);
   return c.json({ paidUntil });
+});
+
+/** Mensalidade combinada com a pessoa (null = volta para a padrão). */
+app.put("/admin/users/:id/price", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const { priceCents } = await c.req.json<{ priceCents: number | null }>();
+  const res = await c.env.DB.prepare("UPDATE users SET price_cents = ? WHERE id = ?")
+    .bind(priceCents === null ? null : cents(priceCents), id)
+    .run();
+  if (!res.meta.changes) fail(404, "Conta não encontrada");
+  return c.json({ ok: true });
+});
+
+/** Coloca (ou tira) a pessoa do programa de indicação. O código do link continua o mesmo. */
+app.post("/admin/users/:id/referral", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const { on } = await c.req.json<{ on: boolean }>();
+  const u = await c.env.DB.prepare("SELECT referral_code FROM users WHERE id = ? AND status = 'approved'").bind(id).first<{ referral_code: string | null }>();
+  if (!u) fail(404, "Conta não encontrada");
+  let code = u.referral_code;
+  for (let i = 0; on && !code && i < 5; i++) {
+    const next = newReferralCode();
+    if (!(await c.env.DB.prepare("SELECT 1 FROM users WHERE referral_code = ?").bind(next).first())) code = next;
+  }
+  if (on && !code) fail(409, "Tente de novo");
+  await c.env.DB.prepare("UPDATE users SET referral_on = ?, referral_code = ? WHERE id = ?").bind(on ? 1 : 0, code, id).run();
+  return c.json({ code });
+});
+
+/** Mensalidade padrão e valor por indicado. */
+app.put("/admin/settings", async (c) => {
+  const { priceCents, rewardCents } = await c.req.json<{ priceCents: number; rewardCents: number }>();
+  const put = (key: string, v: number) =>
+    c.env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(key, String(cents(v)));
+  await c.env.DB.batch([put("price_cents", priceCents), put("reward_cents", rewardCents)]);
+  return c.json(await prices(c.env));
+});
+
+/**
+ * Dinheiro: o que entrou no mês, o que deve entrar por mês, os últimos pagamentos e,
+ * por indicadora, quanto está guardado (30 dias), quanto já pode pagar e quanto já foi pago.
+ */
+app.get("/admin/money", async (c) => {
+  const now = Date.now();
+  const { priceCents } = await prices(c.env);
+  const month = monthStart(now);
+  const lastMonth = monthStart(month - DAY);
+  const sum = (from: number, to: number) =>
+    c.env.DB.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS n FROM payments WHERE refunded_at IS NULL AND created_at >= ? AND created_at < ?")
+      .bind(from, to)
+      .first<{ n: number }>();
+  const [thisMonth, prevMonth, active, payments, rewards] = await Promise.all([
+    sum(month, now + 1),
+    sum(lastMonth, month),
+    c.env.DB.prepare("SELECT email, price_cents FROM users WHERE status = 'approved' AND paid_until > ?")
+      .bind(now)
+      .all<{ email: string; price_cents: number | null }>(),
+    c.env.DB.prepare(
+      `SELECT id, email, amount_cents AS amountCents, months, created_at AS createdAt, refunded_at AS refundedAt
+       FROM payments ORDER BY created_at DESC LIMIT 60`,
+    ).all<{ id: string; email: string; amountCents: number; months: number; createdAt: number; refundedAt: number | null }>(),
+    c.env.DB.prepare(
+      `SELECT rr.referrer_id, u.email AS referrer_email, u.phone AS referrer_phone, rr.referred_email, rr.amount_cents, rr.created_at,
+              rr.available_at, rr.canceled_at, rr.cancel_reason, rr.paid_at
+       FROM referral_rewards rr JOIN users u ON u.id = rr.referrer_id ORDER BY rr.created_at DESC`,
+    ).all<
+      RewardRow & {
+        referrer_id: string;
+        referrer_email: string;
+        referrer_phone: string | null;
+        referred_email: string;
+        created_at: number;
+        cancel_reason: string | null;
+      }
+    >(),
+  ]);
+  const paying = active.results.filter((u) => !isAdmin(c.env, u.email));
+  const referrers = new Map<
+    string,
+    { id: string; email: string; phone: string | null; waitingCents: number; availableCents: number; paidCents: number; items: unknown[] }
+  >();
+  for (const r of rewards.results) {
+    const who = referrers.get(r.referrer_id) ?? {
+      id: r.referrer_id,
+      email: r.referrer_email,
+      phone: r.referrer_phone,
+      waitingCents: 0,
+      availableCents: 0,
+      paidCents: 0,
+      items: [],
+    };
+    const status = rewardStatus(r, now);
+    if (status !== "canceled") who[`${status}Cents`] += r.amount_cents;
+    who.items.push({
+      email: r.referred_email,
+      amountCents: r.amount_cents,
+      status,
+      paidOn: r.created_at,
+      availableAt: r.available_at,
+      paidAt: r.paid_at,
+      cancelReason: r.cancel_reason,
+    });
+    referrers.set(r.referrer_id, who);
+  }
+  return c.json({
+    thisMonthCents: thisMonth?.n ?? 0,
+    lastMonthCents: prevMonth?.n ?? 0,
+    expectedCents: paying.reduce((t, u) => t + (u.price_cents ?? priceCents), 0),
+    payingCount: paying.length,
+    payments: payments.results,
+    // Quem tem o que receber primeiro.
+    referrers: [...referrers.values()].sort((a, b) => b.availableCents - a.availableCents || b.waitingCents - a.waitingCents),
+  });
+});
+
+/**
+ * Estorno: o pagamento deixa de contar e a comissão dele (se ainda não foi paga) cai.
+ * Se é o último pagamento da pessoa, o vencimento volta a ser o de antes dele.
+ */
+app.post("/admin/payments/:id/refund", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const p = await c.env.DB.prepare("SELECT user_id, prev_paid_until FROM payments WHERE id = ? AND refunded_at IS NULL")
+    .bind(id)
+    .first<{ user_id: string; prev_paid_until: number }>();
+  if (!p) fail(404, "Pagamento não encontrado");
+  const latest = await c.env.DB.prepare("SELECT id FROM payments WHERE user_id = ? AND refunded_at IS NULL ORDER BY created_at DESC LIMIT 1")
+    .bind(p.user_id)
+    .first<{ id: string }>();
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE payments SET refunded_at = ? WHERE id = ?").bind(Date.now(), id),
+    cancelReward(c.env, p.user_id, "pagamento estornado", { paymentId: id }),
+    ...(latest?.id === id ? [c.env.DB.prepare("UPDATE users SET paid_until = ? WHERE id = ?").bind(p.prev_paid_until, p.user_id)] : []),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** O administrador pagou (por Pix, fora do app) o que já estava liberado para essa indicadora. */
+app.post("/admin/referrers/:id/pay", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const now = Date.now();
+  const where = "referrer_id = ? AND paid_at IS NULL AND canceled_at IS NULL AND available_at <= ?";
+  const due = await c.env.DB.prepare(`SELECT COALESCE(SUM(amount_cents), 0) AS n FROM referral_rewards WHERE ${where}`).bind(id, now).first<{ n: number }>();
+  if (!due?.n) fail(404, "Nada liberado para pagar");
+  await c.env.DB.prepare(`UPDATE referral_rewards SET paid_at = ? WHERE ${where}`).bind(now, id, now).run();
+  return c.json({ paidCents: due.n });
 });
 
 /** Libera (ou tira) a busca no catálogo inteiro. */
@@ -1140,13 +1462,13 @@ app.get("/admin/songs", async (c) => {
   const offset = Math.max(0, Number(c.req.query("offset")) || 0);
   const PAGE = 50;
   const { results } = await c.env.DB.prepare(
-    `SELECT ${SONG_COLS}, s.created_at AS createdAt, u.email AS uploadedBy
-     FROM songs s LEFT JOIN users u ON u.id = s.uploaded_by
+    `SELECT ${SONG_COLS}, s.created_at AS createdAt, u.email AS requestedBy
+     FROM songs s LEFT JOIN users u ON u.id = ${REQUESTER_SQL}
      WHERE s.status = 'ready' ${words.map(() => "AND s.search LIKE ?").join(" ")}
      ORDER BY ${order} LIMIT ? OFFSET ?`,
   )
     .bind(...words.map((w) => `%${w}%`), PAGE + 1, offset)
-    .all<SongInfo & { createdAt: number; uploadedBy: string | null }>();
+    .all<SongInfo & { createdAt: number; requestedBy: string | null }>();
   return c.json({ songs: results.slice(0, PAGE), more: results.length > PAGE });
 });
 

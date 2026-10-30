@@ -9,6 +9,8 @@ Player de música pessoal na nuvem: suas músicas criptografadas na Cloudflare (
 - Tags, busca, tocadas recentemente, grupos, offline e várias contas.
 - **Acesso pago:** o cadastro pede o celular. Ao ser aprovada, a conta ganha `TRIAL_DAYS` dias; depois disso, só com meses liberados no **Painel** (que também bloqueia e abre o WhatsApp com a cobrança pronta). Vencido, o servidor recusa tudo (402) e o app mostra a tela de pagamento, inclusive para as músicas baixadas. O celular continua ajudando a baixar os pedidos dos outros.
 - **Descobrir:** as paradas do Deezer (Brasil, mundo e por gênero) e "porque você ouve...", com prévia de 30 segundos; pedir é um toque. Só vem do Deezer: ninguém fica sabendo o que já existe no servidor. Cada pedido mostra uma barra de progresso, contada pelo celular que está baixando.
+- **Mensalidade e pagamentos:** no **Painel → Dinheiro** ficam a mensalidade padrão, o que entrou no mês e os pagamentos (com estorno). Cada pessoa pode ter a própria mensalidade (Pessoas → mensalidade → mudar), e "registrar pagamento" já vem com esse valor vezes os meses (0 = cortesia).
+- **Indicações (boca a boca):** só quem o administrador marca **pode indicar** ganha um link de convite (Ajustes → Indicações). Quem chega por ele sempre espera a aprovação, e o Painel mostra quem indicou. Um nível só: a indicadora ganha o valor fixo por indicado na primeira mensalidade paga, liberado 30 dias depois; estorno, bloqueio ou conta apagada nesse tempo derrubam o valor. O administrador paga por Pix fora do app e marca como pago.
 - **Catálogo escondido:** cada pessoa só vê o que ela mesma trouxe. Buscar no catálogo inteiro só para o administrador e para quem ele marcar **vê o catálogo** no Painel.
 - **Aviso de atualização:** quando sai versão nova (cada deploy), o app mostra "Tem atualização nova" e recarrega. Vale no navegador e no app Android.
 
@@ -44,6 +46,7 @@ Sem `RESEND_API_KEY`, os e-mails (código de cadastro e link de "esqueci a senha
 npm test                                                     # unidade (criptografia, blocos, decisões)
 cd packages/core && API_URL=http://127.0.0.1:8787 npx vitest run   # API real (Worker com DEV_MODE=1)
 npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, catálogo escondido
+PERSIST=<pasta> APP_URL=http://127.0.0.1:8790/ node scripts/e2e-referral.mjs   # indicações e cobrança (servidor de teste com banco próprio; ver o topo do script)
 ```
 
 ## Publicar na Cloudflare (plano gratuito)

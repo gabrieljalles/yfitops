@@ -7,14 +7,14 @@ import { SyncButton } from "./components/SyncButton";
 import { InstallAppBanner, InstallAppPrompt } from "./components/InstallApp";
 import { FullPlayer, PlayerBar } from "./components/Player";
 import { TrackSheet } from "./components/TrackSheet";
-import { daysLeft, dueText, formatDate, WARN_DAYS } from "./lib/billing";
+import { brl, daysLeft, dueText, formatDate, WARN_DAYS } from "./lib/billing";
 import { keepLocalData, loadOfflineIndex } from "./lib/blobs";
 import { reconcileMerges } from "./lib/catalog";
 import { jobsStore } from "./lib/importer";
 import { libraryStore, loadLocal, resetLibrary, sync } from "./lib/library";
 import { useStore } from "./lib/observable";
 import { playerStore, stop } from "./lib/player";
-import { isExpired, pendingRequestsStore, refreshAccount, sessionStore } from "./lib/session";
+import { isExpired, pendingRequestsStore, refreshAccount, saveInvite, sessionStore } from "./lib/session";
 import { uiStore } from "./lib/ui";
 import { AuthPage, PendingPage, ResetPage } from "./pages/Auth";
 import { FavoritesPage, GroupPage } from "./pages/Group";
@@ -54,6 +54,14 @@ export function App() {
 
   const pending = session?.status === "pending";
   const expired = isExpired(session, now);
+
+  // Link de convite (#/convite/CÓDIGO): guarda o código para o cadastro e abre o início.
+  // Guarda já aqui (e não num efeito) para a tela de entrar já abrir em "criar conta".
+  const invite = parts[0] === "convite" ? parts[1] : undefined;
+  if (invite) saveInvite(invite);
+  useEffect(() => {
+    if (invite) navigate("/");
+  }, [invite]);
 
   useEffect(() => {
     if (!session || pending) {
@@ -209,7 +217,8 @@ function PaymentBanner() {
   return (
     <div className="access-banner">
       <Notice tone="warn">
-        Seu acesso vence {dueText(session.paidUntil)} ({formatDate(session.paidUntil)}). {session.paymentInfo}
+        Seu acesso vence {dueText(session.paidUntil)} ({formatDate(session.paidUntil)}).
+        {session.priceCents !== undefined && ` Mensalidade: ${brl(session.priceCents)}.`} {session.paymentInfo}
       </Notice>
     </div>
   );

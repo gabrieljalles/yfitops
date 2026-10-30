@@ -10,6 +10,7 @@ import {
   refreshAccount,
   resetPassword,
   sessionStore,
+  invitedBy,
   signup,
   startSignup,
   type SignupStart,
@@ -190,7 +191,8 @@ function fromServer(err: unknown, field: FieldName): never {
 }
 
 export function AuthPage() {
-  const [mode, setMode] = useState<Mode>("entrar");
+  // Chegou por um convite: já abre em criar conta.
+  const [mode, setMode] = useState<Mode>(() => (invitedBy() ? "criar" : "entrar"));
   /** Criar conta tem duas etapas: dados → código recebido por e-mail. */
   const [step, setStep] = useState<"dados" | "codigo">("dados");
   const [email, setEmail] = useState("");
@@ -271,6 +273,9 @@ export function AuthPage() {
   return (
     <Shell>
       <form ref={formRef} className="form auth-form" onSubmit={submit} noValidate>
+        {mode === "criar" && invitedBy() && (
+          <p className="muted small invite-note">Você recebeu um convite. Crie sua conta: o acesso é liberado assim que ela for aprovada.</p>
+        )}
         {codeStep ? (
           <>
             {general && <Notice tone={general.tone}>{general.message}</Notice>}
