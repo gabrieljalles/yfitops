@@ -116,6 +116,8 @@ interface KeepAlivePlugin {
   allowBackground(): Promise<void>;
   /** "play", "pause", "next", "prev" ou "seek:<segundos>" (notificação, carro, fone, tela bloqueada). */
   addListener(event: "action", cb: (e: { action: string }) => void): Promise<{ remove: () => Promise<void> }>;
+  /** A cada 5 s com o ajudante ou o segundo plano ligados (a página não depende dos relógios dela). Desde o build 7. */
+  addListener(event: "wake", cb: () => void): Promise<{ remove: () => Promise<void> }>;
 }
 
 const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
@@ -124,7 +126,7 @@ const KeepAlive = registerPlugin<KeepAlivePlugin>("YfitopsKeepAlive");
  * Versão do app Android que o site espera. Suba junto com o versionCode do APK
  * quando a parte nativa mudar: quem tiver um app mais antigo é avisado para instalar o novo.
  */
-export const NATIVE_BUILD = 6;
+export const NATIVE_BUILD = 7;
 
 /**
  * Desde este build, o celular ajudante abre sozinho quando o celular liga. Não
@@ -170,6 +172,11 @@ export function nowPlaying(np: NowPlaying | null) {
 /** Comandos do sistema: notificação, carro, fone Bluetooth, tela bloqueada. */
 export function onNativeAction(cb: (action: string) => void) {
   if (isNativeApp()) void KeepAlive.addListener("action", (e) => cb(e.action)).catch(() => {});
+}
+
+/** Despertador da parte nativa: com a tela desligada, os relógios da página quase param. */
+export function onNativeWake(cb: () => void) {
+  if (isNativeApp()) void KeepAlive.addListener("wake", cb).catch(() => {});
 }
 
 /** Durante um download para a fila: Wi-Fi e processador acordados mesmo com a tela desligada. */

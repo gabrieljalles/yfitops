@@ -14,6 +14,7 @@ import {
   nativeHelper,
   nowPlaying,
   onNativeAction,
+  onNativeWake,
   onWifi,
   watchCharging,
   watchNetwork,
@@ -82,6 +83,8 @@ let backgroundCapable = false;
 /** Segundo plano ligado na parte nativa. */
 let background = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** Quando a próxima volta está marcada (o despertador nativo confere, se o relógio da página atrasar). */
+let due = 0;
 let running = false;
 let started = false;
 /** Já avisou o servidor que está disponível (para avisar quando sair). */
@@ -130,6 +133,7 @@ function check() {
 
 function schedule(ms: number) {
   clearTimeout(timer);
+  due = Date.now() + ms;
   timer = setTimeout(() => void tick(), ms);
 }
 
@@ -360,6 +364,10 @@ export function startSpot() {
   watchCharging((c) => {
     charging = c;
     kick();
+  });
+  // Tela desligada sem música: o Android segura o setTimeout; o app Android acorda a página.
+  onNativeWake(() => {
+    if (!running && Date.now() >= due) void tick();
   });
   document.addEventListener("visibilitychange", kick);
   sessionStore.subscribe(kick);

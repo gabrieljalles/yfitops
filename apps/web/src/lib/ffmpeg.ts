@@ -265,7 +265,8 @@ async function encodeOpus(interleaved: Float32Array, onProgress: (p: number) => 
     encoder.encode(data);
     data.close();
     // Não deixa a fila do codificador crescer sem limite.
-    while (encoder.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 5));
+    // (espera o aviso do codificador, não um relógio: com a tela desligada, o relógio quase para)
+    while (encoder.encodeQueueSize > 8) await new Promise((r) => (encoder.addEventListener("dequeue", r, { once: true }), setTimeout(r, 50)));
     onProgress(start / frames);
     if (failure) throw failure;
   }

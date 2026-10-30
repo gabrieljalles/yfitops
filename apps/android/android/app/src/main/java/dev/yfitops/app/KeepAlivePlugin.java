@@ -40,6 +40,26 @@ public class KeepAlivePlugin extends Plugin {
     /** Segundo plano (Wi-Fi e carregando): ajuda a fila com o app fechado na tela. */
     private boolean background = false;
 
+    /**
+     * Com a tela desligada e sem música, o Android segura os relógios da página
+     * (setTimeout) e a fila parava. Daqui, a cada 5 s, a página é acordada (desde o build 7).
+     */
+    private static final long WAKE_EVERY = 5_000;
+    private final Handler waker = new Handler(Looper.getMainLooper());
+    private final Runnable wake = new Runnable() {
+        @Override
+        public void run() {
+            notifyListeners("wake", new JSObject());
+            waker.postDelayed(this, WAKE_EVERY);
+        }
+    };
+
+    /** Liga o despertador da página enquanto o ajudante ou o segundo plano estiverem ligados. */
+    private void updateWaker() {
+        waker.removeCallbacks(wake);
+        if (helper || background) waker.postDelayed(wake, WAKE_EVERY);
+    }
+
     @Override
     public void load() {
         instance = this;
@@ -135,6 +155,7 @@ public class KeepAlivePlugin extends Plugin {
             // O sistema pode recusar (app em segundo plano): tenta de novo quando o app abrir.
         }
         lock(on || background, 0);
+        updateWaker();
         boolean keep = on || background;
         WebView web = getBridge().getWebView();
         if (Build.VERSION.SDK_INT >= 26) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !keep));
@@ -164,6 +185,7 @@ public class KeepAlivePlugin extends Plugin {
             // O sistema pode recusar (app já no fundo e sem a permissão de bateria).
         }
         if (!helper) lock(on, 0);
+        updateWaker();
         WebView web = getBridge().getWebView();
         if (Build.VERSION.SDK_INT >= 26 && !helper) web.post(() -> web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, !on));
         call.resolve();
@@ -245,6 +267,7 @@ public class KeepAlivePlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        waker.removeCallbacks(wake);
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         if (instance == this) instance = null;
