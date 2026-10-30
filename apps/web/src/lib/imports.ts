@@ -453,7 +453,8 @@ const onVisible = () => {
 
 /**
  * Acompanha os pedidos: ao abrir o app e, enquanto houver pedido em aberto, com o
- * app na tela: a cada 6 s se algum está baixando (a barra anda), senão a cada 20 s.
+ * app na tela: a cada 3 s se algum está na fila ou baixando (chega assim que fica
+ * pronto), senão (só falhas para ver) a cada 20 s.
  * Fechado, o pedido continua na fila do servidor.
  */
 export function watchImports() {
@@ -462,11 +463,13 @@ export function watchImports() {
   let last = 0;
   polling = setInterval(() => {
     if (document.visibilityState !== "visible" || !openRequests()) return;
-    const busy = importsStore.get().requests.some((r) => r.status === "listing" || r.tracks.some((t) => t.status === "working"));
-    if (Date.now() - last < (busy ? 6_000 : 20_000)) return;
+    const busy = importsStore
+      .get()
+      .requests.some((r) => r.status === "queued" || r.status === "listing" || r.tracks.some((t) => t.status === "queued" || t.status === "working"));
+    if (Date.now() - last < (busy ? 3_000 : 20_000)) return;
     last = Date.now();
     void refreshImports().catch(() => {});
-  }, 2_000);
+  }, 1_000);
   document.addEventListener("visibilitychange", onVisible);
 }
 

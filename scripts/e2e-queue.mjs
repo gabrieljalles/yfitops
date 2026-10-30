@@ -93,7 +93,7 @@ try {
   await signup(phone, `ajuda-${run}@teste.com`);
   // O celular sai da tela enquanto o computador pede (ainda não ajuda).
   await phone.goto(URL + "#/ajustes");
-  await phone.getByText("Este celular ajuda a baixar").waitFor();
+  await phone.getByRole("heading", { name: "Baixar músicas pedidas por link" }).waitFor();
 
   step("computador pede o link");
   await desk.goto(URL + "#/enviar");

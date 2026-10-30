@@ -8,6 +8,7 @@ import { canSpot, deviceId, holdAwake, nativeHelper, nowPlaying, onNativeAction,
 import { createStore } from "./observable";
 import { currentTrackId, next, playerStore, prev, seek, toggle } from "./player";
 import { sessionStore } from "./session";
+import { refreshImports } from "./imports";
 import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from "./sources";
 
 // ---------------------------------------------------------------------------
@@ -23,7 +24,9 @@ import { downloadAudio, fetchCover, readLink, searchYouTube, SourceError } from 
 //   - celular ajudante (ligado em Ajustes, só pelo administrador): baixa o
 //     tempo todo no Wi-Fi, com a tela desligada e sem música. Ele não fica com
 //     as músicas longas da própria conta (essas vão para o celular principal);
-//   - revezam: quem acabou de baixar passa a vez (o servidor decide).
+//   - o celular de quem pediu vai primeiro; os outros livres já baixam as
+//     seguintes em paralelo (o servidor decide). Sem trabalho, o servidor segura
+//     o pedido de trabalho até ~25 s e responde assim que chega música na fila.
 // ---------------------------------------------------------------------------
 
 export interface SpotState {
@@ -113,7 +116,8 @@ function schedule(ms: number) {
 function kick() {
   const why = blocker();
   patch({ active: !why, reason: why });
-  if (why && announced && !running) void leave();
+  // Parado esperando trabalho (o servidor segura a resposta): avisa já, para ele não mandar nada.
+  if (why && announced && (!running || !current)) void leave();
   if (!running) schedule(why ? 30_000 : 500);
 }
 
@@ -139,7 +143,9 @@ async function tick() {
     if (res.job) {
       current = res.job;
       await work(res.job);
-      // Acabou: pede de novo logo (o servidor passa a vez se houver outro celular).
+      // Era seu pedido: já entra na sua biblioteca, sem esperar a próxima conferida.
+      if (res.job.type === "track" && res.job.mine) void refreshImports().catch(() => {});
+      // Acabou: pede a próxima logo.
       next = 1_000;
     } else next = (res.wait ?? 60) * 1000;
   } catch (e) {

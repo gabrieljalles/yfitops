@@ -1628,8 +1628,8 @@ app.post("/admin/consumption", async (c) => {
 // ---------------- Fila de importação por link ----------------
 // Quem pede só manda o link. Celulares Android com o app aberto (ou tocando
 // música) e no Wi-Fi pedem trabalho aqui: primeiro ler o link (vira uma música
-// por linha), depois baixar cada música e enviar ao catálogo. Revezam: quem
-// acabou de baixar passa a vez para o celular que espera há mais tempo.
+// por linha), depois baixar cada música e enviar ao catálogo. O celular de quem
+// pediu vai primeiro; os outros livres já pegam as músicas seguintes, em paralelo.
 
 /** Celular que não pediu trabalho nesse tempo saiu (fechou o app, parou a música, saiu do Wi-Fi). */
 const SPOT_ACTIVE = 90_000;
@@ -1637,6 +1637,9 @@ const SPOT_ACTIVE = 90_000;
 const SPOT_STALE = 10 * 60_000;
 /** Tentativas por música antes de desistir. */
 const SPOT_ATTEMPTS = 3;
+/** Sem trabalho, o servidor segura a resposta até esse tempo, olhando a fila a cada SPOT_CHECK. */
+const SPOT_HOLD = 25_000;
+const SPOT_CHECK = 2_000;
 /** O YouTube barrou o celular: ele descansa esse tempo e os outros seguem. */
 const SPOT_REST = 30 * 60_000;
 /** Pedidos em aberto por pessoa, e músicas por link. */
@@ -1865,7 +1868,7 @@ app.delete("/imports/:id", async (c) => {
  * para ler, uma música para baixar, ou nada (e quantos segundos esperar).
  *
  * `mineOnly` (nos dados móveis, com o app aberto): só os pedidos da própria
- * pessoa. O celular não entra no revezamento nem baixa para os outros.
+ * pessoa. O celular não conta como livre nem baixa para os outros.
  * `helper` (celular ajudante, 24 horas): não pega as músicas longas da própria
  * conta, que ficam no celular de quem pediu (o principal).
  */
@@ -1878,7 +1881,7 @@ app.post("/spot/claim", async (c) => {
   const db = c.env.DB;
   const now = Date.now();
   const results = await db.batch([
-    // Só nos dados móveis, o celular não conta como disponível (last_seen = 0): a vez não para nele.
+    // Só nos dados móveis, o celular não conta como livre (last_seen = 0): ninguém guarda música para ele.
     db
       .prepare(
         `INSERT INTO import_devices (id, user_id, last_seen) VALUES (?, ?, ?)
@@ -1909,77 +1912,92 @@ app.post("/spot/claim", async (c) => {
   const blockedUntil = (results[4].results[0] as { blockedUntil: number } | undefined)?.blockedUntil ?? 0;
   if (blockedUntil > now) return c.json({ job: null, wait: Math.ceil((blockedUntil - now) / 1000), resting: true });
 
-  // Ler um link é rápido e não baixa áudio: qualquer celular pega.
-  const list = await db
-    .prepare(
-      `UPDATE import_requests SET status = 'listing', device = ?1, claimed_at = ?2
-       WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' AND (?3 = 0 OR user_id = ?4) ORDER BY created_at LIMIT 1)
-         AND status = 'queued'
-       RETURNING id, url`,
-    )
-    .bind(device, now, mineOnly ? 1 : 0, userId)
-    .first<{ id: string; url: string }>();
-  if (list) return c.json({ job: { type: "list", id: list.id, url: list.url } satisfies SpotJob });
-
-  if (mineOnly) {
-    // Qualquer música do próprio pedido (curta ou longa), na ordem da lista.
-    const own = await db
-      .prepare(
-        `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
-         WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
-                     WHERE t.status = 'queued' AND r.user_id = ? ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
-         RETURNING id, request_id AS requestId, meta`,
-      )
-      .bind(device, now, userId)
-      .first<{ id: string; requestId: string; meta: string }>();
-    if (!own) return c.json({ job: null, wait: 20 });
-    return c.json({ job: { type: "track", id: own.id, requestId: own.requestId, meta: JSON.parse(own.meta), mine: true } satisfies SpotJob });
+  // Sem trabalho agora: segura a resposta e olha a fila a cada 2 s. Chegou pedido, o
+  // celular começa na hora (em vez de só perceber na próxima conferida).
+  const until = now + SPOT_HOLD;
+  for (;;) {
+    const job = await claimJob(db, device, userId, mineOnly, helper);
+    if (job) return c.json({ job });
+    if (Date.now() + SPOT_CHECK > until) return c.json({ job: null, wait: 1 });
+    await new Promise((r) => setTimeout(r, SPOT_CHECK));
+    // Parou de ajudar enquanto esperava (saiu do app, pausou): não pega mais nada.
+    if (!mineOnly) {
+      const seen = await db.prepare("SELECT last_seen AS lastSeen FROM import_devices WHERE id = ?").bind(device).first<{ lastSeen: number }>();
+      if (!seen?.lastSeen) return c.json({ job: null, wait: 1 });
+    }
   }
+});
 
-  if (!(await db.prepare("SELECT 1 FROM import_tracks WHERE status = 'queued' LIMIT 1").first())) return c.json({ job: null, wait: 60 });
+/**
+ * Pega um trabalho para este celular, ou null. Ordem:
+ *   1. ler um link (é rápido, qualquer um pega);
+ *   2. as músicas que a própria pessoa pediu (o celular dela vai sempre primeiro);
+ *   3. a próxima música de qualquer pessoa. A música da vez de quem tem o celular
+ *      livre fica para ele: os outros já adiantam as seguintes, em paralelo.
+ */
+async function claimJob(db: D1Database, device: string, userId: string, mineOnly: boolean, helper: boolean): Promise<SpotJob | null> {
+  const now = Date.now();
+  // Só leitura: a fila vazia não custa escrita no banco.
+  const pending = await db
+    .prepare(
+      `SELECT EXISTS (SELECT 1 FROM import_requests WHERE status = 'queued') AS lists,
+              EXISTS (SELECT 1 FROM import_tracks WHERE status = 'queued') AS tracks`,
+    )
+    .first<{ lists: number; tracks: number }>();
+  if (!pending?.lists && !pending?.tracks) return null;
 
-  // Mais de 13 minutos não vai para o servidor: só o celular de quem pediu baixa (e fica com ela).
-  // Ele pega na hora, sem esperar a vez: nenhum outro celular pode baixar essa.
-  const mine = helper ? null : await db
+  if (pending.lists) {
+    const list = await db
+      .prepare(
+        `UPDATE import_requests SET status = 'listing', device = ?1, claimed_at = ?2
+         WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' AND (?3 = 0 OR user_id = ?4)
+                     ORDER BY user_id = ?4 DESC, created_at LIMIT 1)
+           AND status = 'queued'
+         RETURNING id, url`,
+      )
+      .bind(device, now, mineOnly ? 1 : 0, userId)
+      .first<{ id: string; url: string }>();
+    if (list) return { type: "list", id: list.id, url: list.url };
+  }
+  if (!pending.tracks) return null;
+
+  // As da própria pessoa, na ordem da lista. Mais de 13 minutos só o celular dela baixa
+  // (e fica com ela); o celular ajudante não fica com essas.
+  const own = await db
     .prepare(
       `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
-                   WHERE t.status = 'queued' AND r.user_id = ? AND ${LONG_TRACK}
+                   WHERE t.status = 'queued' AND r.user_id = ? AND (? = 0 OR NOT ${LONG_TRACK})
                    ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
        RETURNING id, request_id AS requestId, meta`,
     )
-    .bind(device, now, userId)
+    .bind(device, now, userId, helper ? 1 : 0)
     .first<{ id: string; requestId: string; meta: string }>();
-  if (mine) return c.json({ job: { type: "track", id: mine.id, requestId: mine.requestId, meta: JSON.parse(mine.meta), mine: true } satisfies SpotJob });
-
-  // Revezamento: a vez é do celular livre que espera há mais tempo desde o último download.
-  const turn = await db
-    .prepare(
-      `SELECT d.id FROM import_devices d
-       WHERE d.last_seen > ? AND d.blocked_until <= ?
-         AND NOT EXISTS (SELECT 1 FROM import_tracks t WHERE t.status = 'working' AND t.device = d.id)
-       ORDER BY d.last_done_at, d.id LIMIT 1`,
-    )
-    .bind(now - SPOT_ACTIVE, now)
-    .first<{ id: string }>();
-  if (turn && turn.id !== device) return c.json({ job: null, wait: 15 });
+  if (own) return { type: "track", id: own.id, requestId: own.requestId, meta: JSON.parse(own.meta), mine: true };
+  // Nos dados móveis, só as suas.
+  if (mineOnly) return null;
 
   // Uma música de cada link por vez (a 1ª de cada, depois a 2ª...): um link grande não segura os outros.
   const track = await db
     .prepare(
-      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
+      `UPDATE import_tracks SET status = 'working', device = ?1, claimed_at = ?2, progress = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
-                   WHERE t.status = 'queued' AND NOT ${LONG_TRACK} ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
+                   WHERE t.status = 'queued' AND NOT ${LONG_TRACK}
+                     AND NOT EXISTS (
+                       SELECT 1 FROM import_devices d
+                       WHERE d.user_id = r.user_id AND d.id != ?1 AND d.last_seen > ?3 AND d.blocked_until <= ?2
+                         AND NOT EXISTS (SELECT 1 FROM import_tracks w WHERE w.status = 'working' AND w.device = d.id)
+                         AND t.id = (SELECT q.id FROM import_tracks q JOIN import_requests qr ON qr.id = q.request_id
+                                     WHERE q.status = 'queued' AND qr.user_id = r.user_id ORDER BY q.pos, qr.created_at LIMIT 1))
+                   ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
        RETURNING id, request_id AS requestId, meta`,
     )
-    .bind(device, now)
+    .bind(device, now, now - SPOT_ACTIVE)
     .first<{ id: string; requestId: string; meta: string }>();
-  if (!track) return c.json({ job: null, wait: 15 });
+  if (!track) return null;
   const owner = await db.prepare("SELECT user_id AS userId FROM import_requests WHERE id = ?").bind(track.requestId).first<{ userId: string }>();
-  return c.json({
-    job: { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta), mine: owner?.userId === userId } satisfies SpotJob,
-  });
-});
+  return { type: "track", id: track.id, requestId: track.requestId, meta: JSON.parse(track.meta), mine: owner?.userId === userId };
+}
 
 /** Faixa que se sabe ter mais de 13 minutos (a duração vem do link ou de quem já tentou baixar). */
 const LONG_TRACK = `COALESCE(json_extract(t.meta, '$.duration'), 0) > ${MAX_SONG_SECONDS}`;
@@ -1996,7 +2014,7 @@ app.post("/spot/progress/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-/** O celular parou de ajudar (pausou a música, saiu do app ou do Wi-Fi): a vez passa na hora. */
+/** O celular parou de ajudar (pausou a música, saiu do app ou do Wi-Fi): o que ele tinha volta para a fila. */
 app.post("/spot/leave", async (c) => {
   const device = checkDevice((await c.req.json<{ device: string }>()).device);
   await c.env.DB.batch([

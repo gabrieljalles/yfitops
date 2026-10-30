@@ -442,14 +442,6 @@ function HelpSettings() {
   return (
     <section>
       <h2>Baixar músicas pedidas por link</h2>
-      <div className="setting-row">
-        <span>
-          Este celular ajuda a baixar
-          <small className="muted">
-            No Wi-Fi, com o app aberto ou tocando música. Nos dados móveis, só os seus pedidos.
-          </small>
-        </span>
-      </div>
       {(allowed || spot.helper) && (
         <label className="setting-row">
           <span>

@@ -48,6 +48,7 @@ npm test                                                     # unidade (criptogr
 cd packages/core && API_URL=http://127.0.0.1:8787 npx vitest run   # API real (Worker com DEV_MODE=1)
 npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, catálogo escondido
 PERSIST=<pasta> APP_URL=http://127.0.0.1:8790/ node scripts/e2e-referral.mjs   # indicações e cobrança (servidor de teste com banco próprio; ver o topo do script)
+APP_URL=http://127.0.0.1:8790/ node scripts/e2e-spot-order.mjs   # ordem da fila: celular de quem pediu primeiro, outros em paralelo (servidor de teste com banco vazio)
 ```
 
 ## Publicar na Cloudflare (plano gratuito)
