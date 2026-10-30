@@ -27,6 +27,7 @@ import {
   requestProgress,
   requestStage,
   requestTrack,
+  resetDiscover,
   retryRequest,
   searchTracks,
   serviceName,
@@ -54,9 +55,16 @@ function SpotifyLimit() {
  * músicas novas (as paradas do Deezer e "porque você ouve...").
  */
 export function DiscoverPage() {
-  // Saiu do Descobrir: na próxima vez, sorteia outro artista para o "Porque você ouve".
-  useEffect(() => () => void (pickedArtist = null), []);
-  // Vem de um store (e não de useState) para sobreviver à troca de tela.
+  // Saiu do Descobrir: na volta, começa do zero (sem a busca de antes) e sorteia outro
+  // artista para o "Porque você ouve".
+  useEffect(
+    () => () => {
+      pickedArtist = null;
+      resetDiscover();
+    },
+    [],
+  );
+  // Vem de um store (e não de useState): um pedido em andamento sobrevive à troca de tela.
   const { link, sending, error: linkError, ask, pick, tags, requests, results, resultsFor, searching, requested, arrived } = useStore(importsStore);
   const asking = !!pick || ask;
   /** Digitou um nome (e não colou um link): o botão busca em vez de pedir. */

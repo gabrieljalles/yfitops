@@ -97,9 +97,10 @@ export async function searchTracks() {
   patch({ searching: true, error: "" });
   try {
     const { tracks } = await api.json<{ tracks: TrackSearchHit[] }>(`/search/tracks?q=${encodeURIComponent(q)}`);
-    patch({ results: tracks, resultsFor: q });
+    // Saiu do Descobrir (o campo foi limpo) antes de a busca responder: não mostra nada.
+    if (importsStore.get().link.trim() === q) patch({ results: tracks, resultsFor: q });
   } catch (e) {
-    patch({ error: (e as Error).message });
+    if (importsStore.get().link.trim() === q) patch({ error: (e as Error).message });
   } finally {
     patch({ searching: false });
   }
@@ -122,6 +123,17 @@ export async function requestTrack(hit: TrackSearchHit) {
 
 /** Fecha os resultados da busca. */
 export const clearSearch = () => patch({ results: null, resultsFor: "" });
+
+/**
+ * Saiu do Descobrir: na volta, ele começa do zero (campo vazio, sem busca nem tags).
+ * Só não limpa no meio de um pedido ou de uma pergunta sobre o link ("criar a
+ * playlist?"), que ainda precisam do link digitado.
+ */
+export function resetDiscover() {
+  const s = importsStore.get();
+  if (s.sending || s.ask || s.pick) return;
+  patch({ link: "", error: "", tags: [], results: null, resultsFor: "" });
+}
 
 /**
  * Link do YouTube de um vídeo DENTRO de uma lista (watch?v=X&list=Y), o que

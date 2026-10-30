@@ -290,7 +290,13 @@ try {
     if ((await page.getByLabel("Link ou nome da música").inputValue()) !== name) throw new Error("o artista não foi para a busca");
     console.log(`   parecidos: tocar em ${name} busca o nome ✓`);
     await shot("12b3-celular-busca-artista");
-    await page.getByRole("button", { name: "fechar" }).click();
+    // Saiu do Descobrir e voltou: começa do zero, sem a busca de antes.
+    await page.goto(URL + "#/biblioteca");
+    await page.goto(URL + "#/descobrir");
+    await page.getByRole("heading", { name: "Em alta" }).waitFor();
+    if (await page.locator(".search-results").count()) throw new Error("a busca continuou depois de trocar de aba");
+    if (await page.getByLabel("Link ou nome da música").inputValue()) throw new Error("o campo continuou preenchido depois de trocar de aba");
+    console.log("   trocar de aba volta o Descobrir ao início ✓");
   }
   await page.goto(URL + "#/biblioteca");
   await page.waitForTimeout(800);
