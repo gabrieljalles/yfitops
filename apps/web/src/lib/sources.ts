@@ -243,7 +243,9 @@ export async function downloadAudio(videoId: string, onProgress?: (done: number)
   const fake = testAudio();
   if (fake) {
     const blob = await (await fetch(fake)).blob();
-    // O id do vídeo no fim deixa cada arquivo diferente (senão o catálogo junta todos como o mesmo arquivo).
+    // M4A de teste (igual ao do YouTube) vai como está.
+    if (/mp4/.test(blob.type)) return { file: new File([blob], `${videoId}.m4a`, { type: "audio/mp4" }), title: "", channel: "", duration: 0 };
+    // WAV: o id do vídeo no fim deixa cada arquivo diferente (senão o catálogo junta todos como o mesmo arquivo).
     return { file: new File([blob, videoId], `${videoId}.wav`, { type: "audio/wav" }), title: "", channel: "", duration: 0 };
   }
   const client = await youtube();
@@ -260,7 +262,10 @@ export async function downloadAudio(videoId: string, onProgress?: (done: number)
         throw new SourceError(reason, ps.status === "LOGIN_REQUIRED" ? "temp" : "gone");
       }
       const audio = (info.streaming_data?.adaptive_formats ?? []).filter((f) => f.has_audio && !f.has_video);
-      const best = audio.sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
+      // M4A (AAC 128 kbps) primeiro: entra no catálogo como vem, sem converter, e é o
+      // menor arquivo que toca em todo lugar (iPhone também). Sem ele, o de maior qualidade.
+      const aac = (f: (typeof audio)[number]) => /mp4/.test(f.mime_type ?? "") && (f.bitrate ?? 0) <= 192_000;
+      const best = audio.sort((a, b) => Number(aac(b)) - Number(aac(a)) || (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
       if (!best) throw new SourceError("Sem áudio disponível", "temp");
       const url = await best.decipher(client.session.player);
       const total = Number(best.content_length) || 0;

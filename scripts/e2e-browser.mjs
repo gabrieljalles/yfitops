@@ -1,6 +1,7 @@
 import { chromium } from "playwright-core";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Teste ponta a ponta no navegador. Com o Worker local rodando (npm run dev:server):
@@ -39,6 +40,18 @@ function wav24(seconds = 6, rate = 44100) {
   return Buffer.concat([h, data]);
 }
 
+/**
+ * AUDIO=m4a: o "download" de teste é um M4A AAC 128 kbps em pedaços, igual ao do YouTube
+ * (precisa do ffmpeg instalado). Ele deve entrar no catálogo como M4A, sem virar MP3.
+ */
+const M4A = process.env.AUDIO === "m4a";
+function m4a(seconds = 6) {
+  return execFileSync("ffmpeg", [
+    "-loglevel", "error", "-f", "lavfi", "-i", `sine=frequency=440:duration=${seconds}`, "-ac", "2",
+    "-c:a", "aac", "-b:a", "128k", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1",
+  ]);
+}
+
 /** O convite para instalar o app cobre a tela logo depois de entrar: nos testes, já vem dispensado. */
 function skipInstallPrompt(b) {
   const open = b.newContext.bind(b);
@@ -59,6 +72,15 @@ const helperBrowser = await chromium.launch({ executablePath: CHROME, args: ["--
 skipInstallPrompt(browser);
 skipInstallPrompt(helperBrowser);
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+// Guarda os <audio> que tocaram (o player não os põe na página), para ver se o som anda.
+await ctx.addInitScript(() => {
+  const play = HTMLMediaElement.prototype.play;
+  window.__played = new Set();
+  HTMLMediaElement.prototype.play = function () {
+    window.__played.add(this);
+    return play.call(this);
+  };
+});
 // SAFARI=1: imita a regra do Safari (iPhone): um <audio> só toca se o primeiro play()
 // dele vier no instante de um toque; depois de uma espera, é recusado com o mesmo erro.
 if (process.env.SAFARI) {
@@ -87,6 +109,8 @@ page.on("request", (r) => {
   if (m) audioRequests.set(m[1], (audioRequests.get(m[1]) ?? 0) + 1);
 });
 const maxAudioRequests = () => Math.max(0, ...audioRequests.values());
+const audioTypes = new Set();
+page.on("response", (r) => /\/api\/songs\/[^/]+\/audio/.test(r.url()) && audioTypes.add(r.headers()["content-type"]));
 // Responde o diálogo do próprio app (o que substituiu o prompt() do navegador).
 const answerDialog = async (p, text) => {
   await p.locator(".dialog-input").fill(text);
@@ -136,7 +160,7 @@ try {
   await helperCtx.addInitScript((a) => {
     localStorage.setItem("yfitops.spot-debug", "1");
     localStorage.setItem("yfitops.spot-test-audio", a);
-  }, `data:audio/wav;base64,${wav24().toString("base64")}`);
+  }, M4A ? `data:audio/mp4;base64,${m4a().toString("base64")}` : `data:audio/wav;base64,${wav24().toString("base64")}`);
   const helper = await helperCtx.newPage();
   helper.on("pageerror", (e) => logs.push(`[pageerror celular] ${e.message}`));
   await helper.goto(URL);
@@ -180,6 +204,9 @@ try {
   await page.locator(".track-main").first().click();
   await page.locator('.player-bar button[title="Pausar"]').waitFor({ timeout: 20000 });
   console.log("   tocando ✓");
+  await page.waitForFunction(() => [...window.__played].some((a) => a.currentTime > 1), null, { timeout: 15000 });
+  console.log(`   o som anda (${[...audioTypes].join(", ") || "tocou do aparelho"}) ✓`);
+  if (M4A && audioTypes.size && ![...audioTypes].every((t) => t.startsWith("audio/mp4"))) throw new Error(`esperava M4A, veio ${[...audioTypes]}`);
   await shot("05-biblioteca-tocando");
 
   step("ficha: tag + grupo");

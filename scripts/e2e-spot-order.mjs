@@ -44,6 +44,7 @@ const call = (p, path, json) =>
     [path, json, tokens.get(p)],
   );
 const claim = (p, device) => call(p, "/spot/claim", { device, mineOnly: false, helper: false });
+const ack = (p, device, id) => call(p, `/spot/ack/${id}`, { device });
 const expect = (ok, what) => {
   if (!ok) throw new Error(what);
   console.log(`   ${what} ✓`);
@@ -64,8 +65,10 @@ try {
   const started = Date.now();
   const held = claim(bia, biaPhone);
   await bia.waitForTimeout(3000);
-  await call(ana, "/imports", { url: "https://www.deezer.com/album/213539402", opts: { tags: [], playlist: false } });
+  const asked = await call(ana, "/imports", { url: "https://www.deezer.com/album/213539402", opts: { tags: [], playlist: false } });
+  if (asked.status !== 200) console.log("   pedido:", JSON.stringify(asked));
   const list = await held;
+  await ack(bia, biaPhone, list.body?.job?.id);
   if (list.body?.job?.type !== "list") console.log("   resposta:", JSON.stringify(list));
   const took = Date.now() - started;
   expect(list.body?.job?.type === "list", `a leitura do link chegou segurando a conexão (${(took / 1000).toFixed(1)} s)`);
@@ -79,11 +82,14 @@ try {
     tracks: [1, 2, 3].map((n) => ({ meta: { videoId: `vid${n}xxxxxx`, title: `Faixa ${n}`, artist: "Teste", duration: 200 } })),
   });
   const first = await anaIdle;
+  await ack(ana, anaPhone, first.body?.job?.id);
   expect(first.body?.job?.meta?.title === "Faixa 1" && first.body.job.mine, "o celular de quem pediu pega a 1ª música");
 
   console.log("→ os outros celulares já adiantam as seguintes");
   const second = await claim(bia, biaPhone);
   const third = await claim(bia, biaTablet);
+  await ack(bia, biaPhone, second.body?.job?.id);
+  await ack(bia, biaTablet, third.body?.job?.id);
   expect(second.body?.job?.meta?.title === "Faixa 2", "outro celular pega a 2ª em paralelo");
   expect(third.body?.job?.meta?.title === "Faixa 3", "mais um celular pega a 3ª");
 
@@ -91,6 +97,27 @@ try {
   await call(ana, "/spot/leave", { device: anaPhone });
   const taken = await claim(bia, `bia-tv-${run}`);
   expect(taken.body?.job?.meta?.title === "Faixa 1", "sem o celular dela livre, outro celular baixa a 1ª");
+  await ack(bia, `bia-tv-${run}`, taken.body.job.id);
+
+  console.log("→ a conexão de um celular cai bem na entrega: a tarefa volta em segundos");
+  // O celular pede trabalho e some (app fechado à força) enquanto o servidor ainda segura a resposta.
+  await bia.evaluate(
+    async ([auth, device]) => {
+      const stop = new AbortController();
+      setTimeout(() => stop.abort(), 500);
+      await fetch("/api/spot/claim", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: auth },
+        body: JSON.stringify({ device, mineOnly: false, helper: false }),
+        signal: stop.signal,
+      }).catch(() => {});
+    },
+    [tokens.get(bia), `bia-gone-${run}`],
+  );
+  await call(ana, "/imports", { url: "https://www.deezer.com/album/213539404", opts: { tags: [], playlist: false } });
+  await bia.waitForTimeout(36_000); // a entrega sem confirmação vence (30 s)
+  const rescued = await claim(bia, `bia-ok-${run}`);
+  expect(rescued.body?.job?.type === "list", "outro celular pega o link que ficou sem dono");
 } catch (e) {
   failed = true;
   console.error("FALHOU:", e.message);

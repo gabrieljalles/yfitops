@@ -20,7 +20,7 @@ const PART_SIZE = 50 * 1024 * 1024;
 /** Id da faixa na biblioteca para uma música do catálogo (a mesma música não entra duas vezes). */
 export const songTrackId = (songId: string) => `song.${songId}`;
 
-export const audioRef = (s: SongInfo): SharedRef => ({ id: s.id, shared: "audio", size: s.size, mime: "audio/mpeg" });
+export const audioRef = (s: SongInfo): SharedRef => ({ id: s.id, shared: "audio", size: s.size, mime: s.mime ?? "audio/mpeg" });
 export const coverRef = (s: SongInfo): SharedRef | undefined =>
   s.coverSize ? { id: s.id, shared: "cover", size: s.coverSize, mime: "image/webp" } : undefined;
 
@@ -44,7 +44,7 @@ export async function searchCatalog(text: string): Promise<SongInfo[]> {
 export async function publishSong(
   audio: Uint8Array,
   cover: Uint8Array | undefined,
-  q: SongQuery & { album: string },
+  q: SongQuery & { album: string; mime: string },
   onProgress?: (fraction: number) => void,
 ): Promise<{ song: SongInfo; created: boolean }> {
   const res = await api.json<{ song: SongInfo; created: boolean }>("/songs", {

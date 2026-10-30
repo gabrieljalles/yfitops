@@ -5,7 +5,7 @@ import { addSong, audioRef, coverRef, fileHash, findInCatalog, publishSong } fro
 import { rememberLocal } from "./blobs";
 import { notify } from "./notify";
 import { refreshUsage } from "./usage";
-import { MP3_KBPS, toMp3, type Stage } from "./ffmpeg";
+import { MP3_KBPS, toM4a, toMp3, type Stage } from "./ffmpeg";
 import { formatBytes } from "./tracks";
 import { libraryStore } from "./library";
 import { createStore } from "./observable";
@@ -264,6 +264,11 @@ function probeDuration(data: Uint8Array, mime: string): Promise<number> {
 
 /** MP3 até este bitrate entra como está (só sem as tags): reconverter só piora. */
 const KEEP_MP3_UP_TO = 200_000;
+/**
+ * AAC (M4A) até este bitrate também entra como está: o do YouTube (128 kbps) fica
+ * cerca de 1/3 menor que o MP3 192 kbps, toca em todo lugar e não precisa converter.
+ */
+const KEEP_AAC_UP_TO = 192_000;
 
 /** "já existe": a faixa já estava na biblioteca, com as tags e origens novas aplicadas. */
 async function linkExisting(report: Report, song: Parameters<typeof addSong>[0], extras: ImportExtras, sourceInfo?: string) {
@@ -306,11 +311,17 @@ async function importFile(file: File, extras: ImportExtras, report: Report) {
 
   report({ status: "convertendo" });
   const onStage = (stage: Stage, p: number) => report({ detail: stage, progress: p });
+  const bitrate = f.bitrate || (duration ? (bytes.length * 8) / duration : 0);
   const lightMp3 = /layer 3/i.test(f.codec ?? "") && !!f.bitrate && f.bitrate <= KEEP_MP3_UP_TO;
-  const audio = await toMp3(bytes, extOf(file.name), onStage, lightMp3);
-  const note = lightMp3
-    ? "MP3 mantido como está"
-    : `${sourceInfo} → MP3 ${MP3_KBPS} kbps (${formatBytes(file.size)} → ${formatBytes(audio.length)})`;
+  // O M4A do YouTube vem em pedaços e não diz a duração: sem como medir, conta como leve (é 128 kbps).
+  const lightAac = /aac/i.test(f.codec ?? "") && (!bitrate || bitrate <= KEEP_AAC_UP_TO);
+  const audio = lightAac ? await toM4a(bytes, extOf(file.name), onStage) : await toMp3(bytes, extOf(file.name), onStage, lightMp3);
+  const audioMime = lightAac ? "audio/mp4" : "audio/mpeg";
+  const note = lightAac
+    ? "M4A mantido como está"
+    : lightMp3
+      ? "MP3 mantido como está"
+      : `${sourceInfo} → MP3 ${MP3_KBPS} kbps (${formatBytes(file.size)} → ${formatBytes(audio.length)})`;
 
   let cover: Uint8Array | undefined;
   const pic = c.picture?.[0];
@@ -327,13 +338,13 @@ async function importFile(file: File, extras: ImportExtras, report: Report) {
   const { song, created } = await publishSong(
     audio,
     cover,
-    { ...query, duration: duration || (await probeDuration(audio, "audio/mpeg")), album: c.album || extras.album || "" },
+    { ...query, duration: duration || (await probeDuration(audio, audioMime)), album: c.album || extras.album || "", mime: audioMime },
     (p) => report({ progress: p }),
   );
   // Outra pessoa enviou a mesma enquanto este aparelho convertia.
   if (!created) return linkExisting(report, song, extras, sourceInfo);
   if (extras.publishOnly) return report({ status: "pronto", progress: 1, detail: note, result: song.id });
-  // Este aparelho já tem o MP3 e a capa: tocar não precisa baixar de volta.
+  // Este aparelho já tem o áudio e a capa: tocar não precisa baixar de volta.
   await rememberLocal(audioRef(song), audio).catch(() => {});
   const cref = coverRef(song);
   if (cref && cover) await rememberLocal(cref, cover).catch(() => {});

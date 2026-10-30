@@ -65,7 +65,7 @@ export interface LosslessResult {
   light: { data: Uint8Array; mime: string };
 }
 
-export type Stage = "carregando FFmpeg" | "FLAC" | "verificando" | "versão leve" | "DSD → FLAC" | "extraindo áudio" | "MP3";
+export type Stage = "carregando FFmpeg" | "FLAC" | "verificando" | "versão leve" | "DSD → FLAC" | "extraindo áudio" | "MP3" | "M4A";
 
 const TEMP_FILES = ["out.flac", "pcm.f32", "out.m4a", "out.mp3", "a.md5", "b.md5"];
 
@@ -95,6 +95,22 @@ export function toMp3(
       (p) => onStage("MP3", p),
     );
     return (await ff.readFile("out.mp3")) as Uint8Array;
+  });
+}
+
+/**
+ * AAC (o M4A do YouTube) entra como está, sem reconverter: só troca a "embalagem"
+ * por um M4A comum (o do YouTube vem em pedaços) com o índice no começo, para
+ * tocar enquanto baixa. Leva segundos e não perde qualidade.
+ */
+export function toM4a(input: Uint8Array, ext: string, onStage: (stage: Stage, progress: number) => void): Promise<Uint8Array> {
+  return withInput(input, ext, onStage, async (ff, src) => {
+    await run(
+      ff,
+      ["-i", src, "-map", "0:a:0", "-vn", "-map_metadata", "-1", "-c:a", "copy", "-movflags", "+faststart", "out.m4a"],
+      (p) => onStage("M4A", p),
+    );
+    return (await ff.readFile("out.m4a")) as Uint8Array;
   });
 }
 

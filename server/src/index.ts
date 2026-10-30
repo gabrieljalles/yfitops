@@ -674,11 +674,14 @@ app.delete("/blobs/:id", async (c) => {
 });
 
 // ---------------- Catálogo compartilhado ----------------
-// Cada música existe uma vez só (MP3, sem criptografia). Antes de enviar ou
+// Cada música existe uma vez só (MP3 ou M4A, sem criptografia). Antes de enviar ou
 // baixar, o app pergunta se ela já existe: aí só liga na biblioteca da pessoa.
 
+// O nome do arquivo termina em .mp3 mesmo quando é M4A: o formato de verdade fica em songs.mime.
 const songKey = (id: string, part: "audio" | "cover") => `songs/${id}.${part === "audio" ? "mp3" : "webp"}`;
-const SONG_COLS = "s.id, s.artist, s.title, s.album, s.duration, s.size, s.cover_size AS coverSize";
+const SONG_COLS = "s.id, s.artist, s.title, s.album, s.duration, s.size, s.cover_size AS coverSize, s.mime";
+/** Formatos aceitos no catálogo. */
+const SONG_MIMES = ["audio/mpeg", "audio/mp4"];
 const MAX_SONG = 300 * 1024 * 1024;
 const MAX_COVER = 2 * 1024 * 1024;
 const HASH_RE = /^[A-Za-z0-9_-]{20,64}$/;
@@ -755,7 +758,7 @@ app.post("/songs/match", async (c) => {
  * enquanto este aparelho convertia), devolve a existente e nada é enviado.
  */
 app.post("/songs", async (c) => {
-  const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number }>();
+  const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number; mime?: string }>();
   const q = songQuery(body);
   if (!q.title) fail(400, "Música sem título");
   if (q.duration > MAX_SONG_SECONDS) fail(413, "Músicas com mais de 13 minutos não entram no yfitops");
@@ -763,6 +766,8 @@ app.post("/songs", async (c) => {
   const coverSize = Number(body.coverSize) || 0;
   if (size <= 0 || size > MAX_SONG) fail(413, "Arquivo de música grande demais");
   if (coverSize < 0 || coverSize > MAX_COVER) fail(413, "Capa grande demais");
+  const mime = body.mime ?? "audio/mpeg";
+  if (!SONG_MIMES.includes(mime)) fail(400, "Formato de áudio não aceito");
 
   const existing = await findSong(c.env, q);
   if (existing) {
@@ -771,11 +776,11 @@ app.post("/songs", async (c) => {
     return c.json({ song: existing, created: false });
   }
   await checkQuota(c, size + coverSize);
-  const song: SongInfo = { id: randomId(), artist: q.artist, title: q.title, album: text(body.album), duration: q.duration, size, coverSize };
+  const song: SongInfo = { id: randomId(), artist: q.artist, title: q.title, album: text(body.album), duration: q.duration, size, coverSize, mime };
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `INSERT INTO songs (id, match_key, search, artist, title, album, duration, size, cover_size, source_hash, status, uploaded_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      `INSERT INTO songs (id, match_key, search, artist, title, album, duration, size, cover_size, mime, source_hash, status, uploaded_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
     ).bind(
       song.id,
       matchKey(song.artist, song.title),
@@ -786,6 +791,7 @@ app.post("/songs", async (c) => {
       song.duration,
       size,
       coverSize,
+      mime,
       q.hash ?? null,
       c.get("userId"),
       Date.now(),
@@ -798,9 +804,9 @@ app.post("/songs", async (c) => {
 /** Música ainda sendo enviada por quem está pedindo. */
 async function pendingSong(c: Ctx) {
   const id = checkId(c.req.param("id") ?? "");
-  const row = await c.env.DB.prepare("SELECT size, cover_size AS coverSize FROM songs WHERE id = ? AND status = 'pending' AND uploaded_by = ?")
+  const row = await c.env.DB.prepare("SELECT size, cover_size AS coverSize, mime FROM songs WHERE id = ? AND status = 'pending' AND uploaded_by = ?")
     .bind(id, c.get("userId"))
-    .first<{ size: number; coverSize: number }>();
+    .first<{ size: number; coverSize: number; mime: string }>();
   if (!row) fail(404, "Envio não encontrado (talvez já tenha terminado)");
   return { id, ...row };
 }
@@ -810,7 +816,7 @@ app.put("/songs/:id/audio", async (c) => {
   const size = Number(c.req.header("Content-Length"));
   if (size !== song.size) fail(400, "Tamanho diferente do registrado");
   if (size > MAX_SINGLE_UPLOAD) fail(413, "Use upload em partes");
-  await c.env.BUCKET.put(songKey(song.id, "audio"), c.req.raw.body!, { httpMetadata: { contentType: "audio/mpeg" } });
+  await c.env.BUCKET.put(songKey(song.id, "audio"), c.req.raw.body!, { httpMetadata: { contentType: song.mime } });
   return c.json({ ok: true });
 });
 
@@ -824,7 +830,7 @@ app.put("/songs/:id/cover", async (c) => {
 
 app.post("/songs/:id/mpu", async (c) => {
   const song = await pendingSong(c);
-  const mpu = await c.env.BUCKET.createMultipartUpload(songKey(song.id, "audio"), { httpMetadata: { contentType: "audio/mpeg" } });
+  const mpu = await c.env.BUCKET.createMultipartUpload(songKey(song.id, "audio"), { httpMetadata: { contentType: song.mime } });
   return c.json({ uploadId: mpu.uploadId });
 });
 
@@ -872,7 +878,7 @@ app.get("/songs/search", async (c) => {
   return c.json({ songs: results });
 });
 
-/** O áudio (MP3) ou a capa. Duplicadas já juntadas entregam a música que ficou. */
+/** O áudio (MP3 ou M4A) ou a capa. Duplicadas já juntadas entregam a música que ficou. */
 app.get("/songs/:id/:part{audio|cover}", async (c) => {
   const part = c.req.param("part") as "audio" | "cover";
   const song = await liveSong(c.env, checkId(c.req.param("id")));
@@ -880,7 +886,7 @@ app.get("/songs/:id/:part{audio|cover}", async (c) => {
     fail(404, "Música não encontrada");
   }
   if (part === "cover" && !song.coverSize) fail(404, "Música sem capa");
-  return serveObject(c, songKey(song.id, part), part === "audio" ? "audio/mpeg" : "image/webp");
+  return serveObject(c, songKey(song.id, part), part === "audio" ? (song.mime ?? "audio/mpeg") : "image/webp");
 });
 
 /** Quais destas músicas foram juntadas a outra (o app troca na biblioteca). */
@@ -1640,6 +1646,8 @@ const SPOT_ATTEMPTS = 3;
 /** Sem trabalho, o servidor segura a resposta até esse tempo, olhando a fila a cada SPOT_CHECK. */
 const SPOT_HOLD = 25_000;
 const SPOT_CHECK = 2_000;
+/** Tarefa entregue e não confirmada nesse tempo (a conexão caiu na entrega) volta para a fila. */
+const SPOT_ACK = 30_000;
 /** O YouTube barrou o celular: ele descansa esse tempo e os outros seguem. */
 const SPOT_REST = 30 * 60_000;
 /** Pedidos em aberto por pessoa, e músicas por link. */
@@ -1908,6 +1916,9 @@ app.post("/spot/claim", async (c) => {
       )
       .bind(SPOT_ATTEMPTS, now - SPOT_STALE, device),
     db.prepare("SELECT blocked_until AS blockedUntil FROM import_devices WHERE id = ?").bind(device),
+    // Entregues a um celular que não confirmou (caiu bem na entrega): voltam para a fila, sem contar tentativa.
+    db.prepare("UPDATE import_tracks SET status = 'queued', device = NULL WHERE status = 'working' AND acked = 0 AND claimed_at < ?").bind(now - SPOT_ACK),
+    db.prepare("UPDATE import_requests SET status = 'queued', device = NULL WHERE status = 'listing' AND acked = 0 AND claimed_at < ?").bind(now - SPOT_ACK),
   ]);
   const blockedUntil = (results[4].results[0] as { blockedUntil: number } | undefined)?.blockedUntil ?? 0;
   if (blockedUntil > now) return c.json({ job: null, wait: Math.ceil((blockedUntil - now) / 1000), resting: true });
@@ -1949,7 +1960,7 @@ async function claimJob(db: D1Database, device: string, userId: string, mineOnly
   if (pending.lists) {
     const list = await db
       .prepare(
-        `UPDATE import_requests SET status = 'listing', device = ?1, claimed_at = ?2
+        `UPDATE import_requests SET status = 'listing', device = ?1, claimed_at = ?2, acked = 0
          WHERE id = (SELECT id FROM import_requests WHERE status = 'queued' AND (?3 = 0 OR user_id = ?4)
                      ORDER BY user_id = ?4 DESC, created_at LIMIT 1)
            AND status = 'queued'
@@ -1965,7 +1976,7 @@ async function claimJob(db: D1Database, device: string, userId: string, mineOnly
   // (e fica com ela); o celular ajudante não fica com essas.
   const own = await db
     .prepare(
-      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0
+      `UPDATE import_tracks SET status = 'working', device = ?, claimed_at = ?, progress = 0, acked = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
                    WHERE t.status = 'queued' AND r.user_id = ? AND (? = 0 OR NOT ${LONG_TRACK})
                    ORDER BY t.pos, r.created_at LIMIT 1) AND status = 'queued'
@@ -1980,7 +1991,7 @@ async function claimJob(db: D1Database, device: string, userId: string, mineOnly
   // Uma música de cada link por vez (a 1ª de cada, depois a 2ª...): um link grande não segura os outros.
   const track = await db
     .prepare(
-      `UPDATE import_tracks SET status = 'working', device = ?1, claimed_at = ?2, progress = 0
+      `UPDATE import_tracks SET status = 'working', device = ?1, claimed_at = ?2, progress = 0, acked = 0
        WHERE id = (SELECT t.id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id
                    WHERE t.status = 'queued' AND NOT ${LONG_TRACK}
                      AND NOT EXISTS (
@@ -2001,6 +2012,17 @@ async function claimJob(db: D1Database, device: string, userId: string, mineOnly
 
 /** Faixa que se sabe ter mais de 13 minutos (a duração vem do link ou de quem já tentou baixar). */
 const LONG_TRACK = `COALESCE(json_extract(t.meta, '$.duration'), 0) > ${MAX_SONG_SECONDS}`;
+
+/** O celular recebeu a tarefa (link ou música): ela não volta mais para a fila por falta de confirmação. */
+app.post("/spot/ack/:id", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const device = checkDevice((await c.req.json<{ device: string }>()).device);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE import_tracks SET acked = 1 WHERE id = ? AND device = ? AND status = 'working'").bind(id, device),
+    c.env.DB.prepare("UPDATE import_requests SET acked = 1 WHERE id = ? AND device = ? AND status = 'listing'").bind(id, device),
+  ]);
+  return c.json({ ok: true });
+});
 
 /** Quanto do download já andou (0 a 100): quem pediu vê a barra andar. */
 app.post("/spot/progress/:id", async (c) => {

@@ -49,6 +49,7 @@ cd packages/core && API_URL=http://127.0.0.1:8787 npx vitest run   # API real (W
 npm run e2e                                                  # navegador: avisos, cadastro em 2 etapas, pedido por link, tocar, capa, tags, grupos, offline, sync, catálogo escondido
 PERSIST=<pasta> APP_URL=http://127.0.0.1:8790/ node scripts/e2e-referral.mjs   # indicações e cobrança (servidor de teste com banco próprio; ver o topo do script)
 APP_URL=http://127.0.0.1:8790/ node scripts/e2e-spot-order.mjs   # ordem da fila: celular de quem pediu primeiro, outros em paralelo (servidor de teste com banco vazio)
+AUDIO=m4a npm run e2e -- <pasta>   # o download de teste vem em M4A (igual ao YouTube) e precisa entrar no catálogo como M4A (requer ffmpeg)
 ```
 
 ## Publicar na Cloudflare (plano gratuito)

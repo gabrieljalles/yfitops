@@ -16,6 +16,8 @@ export interface SongInfo {
   size: number;
   /** 0 = sem capa. */
   coverSize: number;
+  /** Formato do áudio: "audio/mpeg" (MP3) ou "audio/mp4" (M4A). Ausente = MP3. */
+  mime?: string;
 }
 
 /** O que identifica uma música ao procurar no catálogo antes de enviar/baixar. */

@@ -142,6 +142,8 @@ async function tick() {
     patch({ resting: !!res.resting });
     if (res.job) {
       current = res.job;
+      // Confirma que recebeu (se a conexão tivesse caído na entrega, a tarefa voltaria para a fila).
+      void api.json(`/spot/ack/${res.job.id}`, { method: "POST", json: { device: deviceId() } }).catch(() => {});
       await work(res.job);
       // Era seu pedido: já entra na sua biblioteca, sem esperar a próxima conferida.
       if (res.job.type === "track" && res.job.mine) void refreshImports().catch(() => {});
