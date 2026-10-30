@@ -68,6 +68,7 @@ const billingOf = (b: AccountBilling): AccountBilling => ({
   ...(b.catalog && { catalog: true as const }),
   ...(b.referral && { referral: true as const }),
   ...(b.priceCents !== undefined && { priceCents: b.priceCents }),
+  ...(b.helper && { helper: true as const }),
 });
 
 /** Código do convite por onde a pessoa chegou (guardado até criar a conta). */
@@ -142,7 +143,7 @@ export async function refreshAccount() {
     return; // offline: fica como estava
   }
   pendingRequestsStore.set(info.pendingRequests ?? 0);
-  const { admin: _old, paidUntil: _p, phone: _ph, paymentInfo: _pi, catalog: _c, referral: _r, priceCents: _pc, ...rest } = s;
+  const { admin: _old, paidUntil: _p, phone: _ph, paymentInfo: _pi, catalog: _c, referral: _r, priceCents: _pc, helper: _h, ...rest } = s;
   const next: Session = { ...rest, status: info.status, ...(info.admin && { admin: true as const }), ...billingOf(info) };
   if (JSON.stringify(next) !== JSON.stringify(s)) {
     await kvSet("session", next);

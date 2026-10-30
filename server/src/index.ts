@@ -121,7 +121,7 @@ async function createSession(c: Ctx, userId: string): Promise<string> {
 
 async function sessionResponse(c: Ctx, userId: string) {
   const u = await c.env.DB.prepare(
-    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status, phone, paid_until, catalog_access, referral_on, price_cents FROM users WHERE id = ?",
+    "SELECT id, email, wrapped_master_key, wrapped_private_key, public_key, status, phone, paid_until, catalog_access, referral_on, price_cents, helper_account FROM users WHERE id = ?",
   )
     .bind(userId)
     .first<Record<string, string> & BillingRow>();
@@ -148,6 +148,7 @@ interface BillingRow {
   catalog_access: number;
   referral_on: number;
   price_cents: number | null;
+  helper_account: number;
 }
 
 /** Vencimento, celular, como pagar, acesso ao catálogo e indicações. Administrador nunca vence e sempre vê o catálogo. */
@@ -155,6 +156,8 @@ function billing(env: Env, email: string, u: BillingRow, p: { priceCents: number
   const price = u.price_cents ?? p.priceCents;
   const referral = u.referral_on ? { referral: true as const } : {};
   if (isAdmin(env, email)) return { phone: u.phone, catalog: true, ...referral };
+  // Conta de celular ajudante: só baixa para os outros, então nunca vence.
+  if (u.helper_account) return { phone: u.phone, helper: true, ...(u.catalog_access ? { catalog: true as const } : {}) };
   return {
     paidUntil: u.paid_until,
     phone: u.phone,
@@ -482,15 +485,15 @@ app.use("/*", async (c, next) => {
   const token = header.startsWith("Bearer ") ? header.slice(7) : (c.req.query("t") ?? "");
   if (!token) fail(401, "Não autenticado");
   const s = await c.env.DB.prepare(
-    "SELECT s.user_id, u.email, u.status, u.paid_until, u.catalog_access FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
+    "SELECT s.user_id, u.email, u.status, u.paid_until, u.catalog_access, u.helper_account FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?",
   )
     .bind(toB64(await sha256(token)), Date.now())
-    .first<{ user_id: string; email: string; status: string; paid_until: number; catalog_access: number }>();
+    .first<{ user_id: string; email: string; status: string; paid_until: number; catalog_access: number; helper_account: number }>();
   if (!s) fail(401, "Sessão expirada");
   if (s.status !== "approved" && !PENDING_OK.includes(c.req.path)) fail(403, "Sua conta ainda espera aprovação");
   const admin = isAdmin(c.env, s.email);
   // Pagamento vencido: nada de tocar, baixar, enviar ou sincronizar até o administrador liberar mais meses.
-  if (!admin && s.status === "approved" && s.paid_until < Date.now() && !EXPIRED_OK(c.req.path)) {
+  if (!admin && !s.helper_account && s.status === "approved" && s.paid_until < Date.now() && !EXPIRED_OK(c.req.path)) {
     fail(402, "Seu acesso venceu. Faça o pagamento para continuar ouvindo.");
   }
   c.set("userId", s.user_id);
@@ -502,7 +505,7 @@ app.use("/*", async (c, next) => {
 
 /** Situação da conta (o app pergunta de tempos em tempos enquanto espera aprovação). */
 app.get("/auth/me", async (c) => {
-  const row = await c.env.DB.prepare("SELECT status, phone, paid_until, catalog_access, referral_on, price_cents FROM users WHERE id = ?")
+  const row = await c.env.DB.prepare("SELECT status, phone, paid_until, catalog_access, referral_on, price_cents, helper_account FROM users WHERE id = ?")
     .bind(c.get("userId"))
     .first<{ status: string } & BillingRow>();
   if (!row) fail(404, "Conta não encontrada");
@@ -1196,7 +1199,7 @@ async function deleteUser(env: Env, id: string) {
 app.get("/admin/overview", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT u.id, u.email, u.status, u.created_at AS createdAt, u.phone, u.paid_until AS paidUntil, u.catalog_access AS catalogAccess,
-            u.price_cents AS priceCents, u.referral_on AS referralOn, u.referral_code AS referralCode,
+            u.price_cents AS priceCents, u.referral_on AS referralOn, u.referral_code AS referralCode, u.helper_account AS helperAccount,
             (SELECT r.email FROM users r WHERE r.id = u.referred_by) AS referredBy,
             (SELECT COUNT(*) FROM users r WHERE r.referred_by = u.id) AS referrals,
             (SELECT COUNT(*) FROM songs s WHERE s.status = 'ready' AND ${REQUESTER_SQL} = u.id) AS songs,
@@ -1213,6 +1216,7 @@ app.get("/admin/overview", async (c) => {
     catalogAccess: number;
     priceCents: number | null;
     referralOn: number;
+    helperAccount: number;
     referralCode: string | null;
     referredBy: string | null;
     referrals: number;
@@ -1226,9 +1230,16 @@ app.get("/admin/overview", async (c) => {
     paymentInfo: c.env.PAYMENT_INFO ?? "",
     // Faxina de músicas sem dono: só começa quando todos já abriram o app.
     ownersWaiting: await ownersWaiting(c.env),
-    users: results.map(({ catalogAccess, referralOn, ...u }) => {
+    users: results.map(({ catalogAccess, referralOn, helperAccount, ...u }) => {
       const admin = isAdmin(c.env, u.email);
-      return { ...u, admin, catalog: admin || Boolean(catalogAccess), referral: Boolean(referralOn), me: u.id === c.get("userId") };
+      return {
+        ...u,
+        admin,
+        catalog: admin || Boolean(catalogAccess),
+        referral: Boolean(referralOn),
+        helper: Boolean(helperAccount),
+        me: u.id === c.get("userId"),
+      };
     }),
   });
 });
@@ -1334,7 +1345,7 @@ app.get("/admin/money", async (c) => {
   const [thisMonth, prevMonth, active, payments, rewards] = await Promise.all([
     sum(month, now + 1),
     sum(lastMonth, month),
-    c.env.DB.prepare("SELECT email, price_cents FROM users WHERE status = 'approved' AND paid_until > ?")
+    c.env.DB.prepare("SELECT email, price_cents FROM users WHERE status = 'approved' AND helper_account = 0 AND paid_until > ?")
       .bind(now)
       .all<{ email: string; price_cents: number | null }>(),
     c.env.DB.prepare(
@@ -1425,6 +1436,15 @@ app.post("/admin/referrers/:id/pay", async (c) => {
   if (!due?.n) fail(404, "Nada liberado para pagar");
   await c.env.DB.prepare(`UPDATE referral_rewards SET paid_at = ? WHERE ${where}`).bind(now, id, now).run();
   return c.json({ paidCents: due.n });
+});
+
+/** Marca (ou desmarca) a conta como celular ajudante: vê a chave "24 horas" e não vence. */
+app.post("/admin/users/:id/helper", async (c) => {
+  const id = checkId(c.req.param("id"));
+  const { allowed } = await c.req.json<{ allowed: boolean }>();
+  const res = await c.env.DB.prepare("UPDATE users SET helper_account = ? WHERE id = ? AND status = 'approved'").bind(allowed ? 1 : 0, id).run();
+  if (!res.meta.changes) fail(404, "Conta não encontrada");
+  return c.json({ ok: true });
 });
 
 /** Libera (ou tira) a busca no catálogo inteiro. */

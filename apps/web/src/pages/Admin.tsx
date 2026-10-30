@@ -34,6 +34,8 @@ interface AdminUser {
   priceCents: number | null;
   /** Está no programa de indicação. */
   referral: boolean;
+  /** Conta de celular ajudante: não vence e não é cliente. */
+  helper: boolean;
   referralCode: string | null;
   /** E-mail de quem indicou. */
   referredBy: string | null;
@@ -89,6 +91,57 @@ function whatsappLink(u: AdminUser, price: number): string | null {
  * Cobrança de uma pessoa: mensalidade, registrar pagamento (libera os meses), bloquear,
  * cobrar, o acesso ao catálogo e o programa de indicação.
  */
+/** Conta só para um celular baixar os pedidos: sem cobrança. */
+function HelperAccount({ u, onChange }: { u: AdminUser; onChange: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="admin-billing">
+      <small className="tone-text-ok">celular ajudante · não vence e não entra na cobrança</small>
+      <small className="muted">No celular, entre com esta conta e ligue em Ajustes → Celular ajudante (24 horas).</small>
+      <span className="row wrap admin-actions">
+        <HelperToggle u={u} busy={busy} setBusy={setBusy} onChange={onChange} />
+      </span>
+    </div>
+  );
+}
+
+function HelperToggle({
+  u,
+  busy,
+  setBusy,
+  onChange,
+}: {
+  u: AdminUser;
+  busy: boolean;
+  setBusy: (b: boolean) => void;
+  onChange: () => Promise<void>;
+}) {
+  const [on, setOn] = useState(u.helper);
+  return (
+    <label className="admin-toggle" title="Conta só para um celular que baixa os pedidos de todos, 24 horas">
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={busy}
+        onChange={(e) => {
+          const allowed = e.target.checked;
+          setOn(allowed);
+          void attempt(async () => {
+            setBusy(true);
+            try {
+              await api.json(`/admin/users/${u.id}/helper`, { method: "POST", json: { allowed } });
+              await onChange();
+            } finally {
+              setBusy(false);
+            }
+          }, allowed ? `${u.email} agora é celular ajudante` : `${u.email} voltou a ser uma conta normal`);
+        }}
+      />
+      celular ajudante
+    </label>
+  );
+}
+
 function Billing({ u, prices, onChange }: { u: AdminUser; prices: Prices; onChange: () => Promise<void> }) {
   const price = priceOf(u, prices);
   const [count, setCount] = useState(1);
@@ -219,6 +272,7 @@ function Billing({ u, prices, onChange }: { u: AdminUser; prices: Prices; onChan
           />
           pode indicar
         </label>
+        <HelperToggle u={u} busy={busy} setBusy={setBusy} onChange={onChange} />
         {u.referral && u.referralCode && (
           <button className="link" onClick={() => void copyText(inviteLink(u.referralCode!), "Link de convite")}>
             copiar link de convite
@@ -416,7 +470,8 @@ function People({ data, onChange }: { data: Overview; onChange: () => Promise<vo
                       {u.referral && `indicadora · ${u.referrals === 1 ? "1 indicado" : `${u.referrals} indicados`}`}
                     </small>
                   )}
-                  {!u.admin && <Billing u={u} prices={data.prices} onChange={onChange} />}
+                  {!u.admin &&
+                    (u.helper ? <HelperAccount u={u} onChange={onChange} /> : <Billing u={u} prices={data.prices} onChange={onChange} />)}
                 </span>
                 <span className="row">
                   <button className="link" onClick={() => void resetLink(u)}>

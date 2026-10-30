@@ -139,6 +139,8 @@ export interface AccountBilling {
   referral?: true;
   /** Mensalidade dessa pessoa (centavos), quando definida. */
   priceCents?: number;
+  /** Conta de celular ajudante (marcada pelo administrador): pode ligar o modo 24 horas. */
+  helper?: true;
 }
 
 /** Em que pé está uma pessoa indicada (para quem indicou). */

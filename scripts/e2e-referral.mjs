@@ -169,6 +169,25 @@ try {
   ok("filtro de indicadoras");
   await shot(admin, "r4-pessoas");
 
+  step("conta de celular ajudante");
+  const robo = await (await context()).newPage();
+  watch(robo, "ajudante");
+  await robo.addInitScript(() => localStorage.setItem("yfitops.spot-debug", "1")); // faz o papel do app Android
+  const roboEmail = `robo-${stamp}@teste.com`;
+  await signup(robo, roboEmail);
+  await robo.goto(URL + "#/ajustes");
+  await robo.getByRole("heading", { name: "Baixar músicas pedidas por link" }).waitFor();
+  if (await robo.getByText("Celular ajudante (24 horas)").count()) throw new Error("conta comum já vê a chave 24 horas");
+  await openAdmin("Pessoas");
+  await person(roboEmail).getByLabel("celular ajudante").check();
+  await admin.getByText(`${roboEmail} agora é celular ajudante`).waitFor();
+  await person(roboEmail).getByText("não vence e não entra na cobrança").waitFor();
+  await robo.reload();
+  await robo.getByText("Celular ajudante (24 horas)").waitFor();
+  if (await robo.getByText(/Seu acesso vence/).count()) throw new Error("conta de ajudante mostra vencimento");
+  await shot(robo, "r6-ajudante");
+  ok("marcada no Painel, a conta vê a chave 24 horas e não vence");
+
   step("celular");
   const phone = await (await context({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })).newPage();
   watch(phone, "celular");

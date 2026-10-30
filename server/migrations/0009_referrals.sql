@@ -7,6 +7,8 @@ ALTER TABLE users ADD COLUMN referral_on INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN referral_code TEXT;
 -- Quem indicou essa pessoa (id). Um nível só: indicar não passa adiante.
 ALTER TABLE users ADD COLUMN referred_by TEXT;
+-- Conta de celular ajudante (marcada no Painel): vê a chave "24 horas", não vence e não é cliente.
+ALTER TABLE users ADD COLUMN helper_account INTEGER NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX users_referral_code ON users(referral_code);
 CREATE INDEX users_referred_by ON users(referred_by);
 

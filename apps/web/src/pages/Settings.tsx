@@ -433,7 +433,9 @@ function ReferralSettings() {
 
 function HelpSettings() {
   const spot = useStore(spotStore);
-  const admin = !!useStore(sessionStore)?.admin;
+  const session = useStore(sessionStore);
+  // A chave "24 horas" aparece para o administrador e para as contas marcadas no Painel como celular ajudante.
+  const allowed = !!session?.admin || !!session?.helper;
   const [build, setBuild] = useState(0);
   useEffect(() => void nativeBuild().then(setBuild), []);
   if (!spot.capable) return null;
@@ -448,7 +450,7 @@ function HelpSettings() {
           </small>
         </span>
       </div>
-      {(admin || spot.helper) && (
+      {(allowed || spot.helper) && (
         <label className="setting-row">
           <span>
             Celular ajudante (24 horas)
