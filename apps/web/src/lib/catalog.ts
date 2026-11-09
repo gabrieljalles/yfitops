@@ -44,7 +44,7 @@ export async function searchCatalog(text: string): Promise<SongInfo[]> {
 export async function publishSong(
   audio: Uint8Array,
   cover: Uint8Array | undefined,
-  q: SongQuery & { album: string; mime: string },
+  q: SongQuery & { album: string; mime: string; own: boolean },
   onProgress?: (fraction: number) => void,
 ): Promise<{ song: SongInfo; created: boolean }> {
   const res = await api.json<{ song: SongInfo; created: boolean }>("/songs", {

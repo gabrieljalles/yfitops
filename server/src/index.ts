@@ -758,7 +758,7 @@ app.post("/songs/match", async (c) => {
  * enquanto este aparelho convertia), devolve a existente e nada é enviado.
  */
 app.post("/songs", async (c) => {
-  const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number; mime?: string }>();
+  const body = await c.req.json<SongQuery & { album?: string; size: number; coverSize?: number; mime?: string; own?: boolean }>();
   const q = songQuery(body);
   if (!q.title) fail(400, "Música sem título");
   if (q.duration > MAX_SONG_SECONDS) fail(413, "Músicas com mais de 13 minutos não entram no yfitops");
@@ -769,9 +769,12 @@ app.post("/songs", async (c) => {
   const mime = body.mime ?? "audio/mpeg";
   if (!SONG_MIMES.includes(mime)) fail(400, "Formato de áudio não aceito");
 
+  // Arquivo da própria pessoa (não um download da fila para outra): conta como pedido dela.
+  const requested = (songId: string) =>
+    body.own ? [c.env.DB.prepare("INSERT OR IGNORE INTO song_requests (user_id, song_id, created_at) VALUES (?, ?, ?)").bind(c.get("userId"), songId, Date.now())] : [];
   const existing = await findSong(c.env, q);
   if (existing) {
-    const add = addSources(c.env, existing.id, q.sources);
+    const add = [...addSources(c.env, existing.id, q.sources), ...requested(existing.id)];
     if (add.length) await c.env.DB.batch(add);
     return c.json({ song: existing, created: false });
   }
@@ -797,6 +800,7 @@ app.post("/songs", async (c) => {
       Date.now(),
     ),
     ...addSources(c.env, song.id, q.sources),
+    ...requested(song.id),
   ]);
   return c.json({ song, created: true });
 });
@@ -1021,6 +1025,8 @@ async function tidyCatalog(env: Env) {
         env.DB.prepare("UPDATE songs SET merged_into = ? WHERE merged_into = ?").bind(into.id, r.id),
         env.DB.prepare("UPDATE OR IGNORE song_sources SET song_id = ? WHERE song_id = ?").bind(into.id, r.id),
         env.DB.prepare("DELETE FROM song_sources WHERE song_id = ?").bind(r.id),
+        env.DB.prepare("UPDATE OR IGNORE song_requests SET song_id = ? WHERE song_id = ?").bind(into.id, r.id),
+        env.DB.prepare("DELETE FROM song_requests WHERE song_id = ?").bind(r.id),
       ]);
       await env.BUCKET.delete([songKey(r.id, "audio"), songKey(r.id, "cover")]);
       merged++;
@@ -1159,12 +1165,14 @@ app.get("/referral", async (c) => {
 });
 
 /**
- * Quem pediu a música (e não o celular que baixou): a primeira pessoa que pediu pela
- * fila de links ou pela busca. Sem pedido na fila, foi quem enviou o arquivo.
+ * Quem pediu a música (e não o celular que baixou): a primeira pessoa que pediu
+ * (song_requests). Sem registro, quem enviou o arquivo.
  */
 const REQUESTER_SQL = `COALESCE(
-  (SELECT r.user_id FROM import_tracks t JOIN import_requests r ON r.id = t.request_id WHERE t.song_id = s.id ORDER BY r.created_at LIMIT 1),
+  (SELECT q.user_id FROM song_requests q WHERE q.song_id = s.id ORDER BY q.created_at LIMIT 1),
   s.uploaded_by)`;
+/** A pessoa u pediu a música s (sozinha ou junto com outras). */
+const REQUESTED_BY_U = "EXISTS (SELECT 1 FROM song_requests q WHERE q.song_id = s.id AND q.user_id = u.id)";
 
 // ---------------- Painel administrativo ----------------
 // Só para ADMIN_EMAILS. Para os outros, estas rotas respondem igual a uma rota
@@ -1189,6 +1197,7 @@ async function deleteUser(env: Env, id: string) {
     env.DB.prepare("DELETE FROM import_devices WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM items WHERE owner = ?").bind(id),
     env.DB.prepare("DELETE FROM song_owners WHERE user_id = ?").bind(id),
+    env.DB.prepare("DELETE FROM song_requests WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM blobs WHERE owner = ?").bind(id),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(id),
     env.DB.prepare("DELETE FROM recovery_tokens WHERE user_id = ?").bind(id),
@@ -1208,8 +1217,8 @@ app.get("/admin/overview", async (c) => {
             u.price_cents AS priceCents, u.referral_on AS referralOn, u.referral_code AS referralCode, u.helper_account AS helperAccount,
             (SELECT r.email FROM users r WHERE r.id = u.referred_by) AS referredBy,
             (SELECT COUNT(*) FROM users r WHERE r.referred_by = u.id) AS referrals,
-            (SELECT COUNT(*) FROM songs s WHERE s.status = 'ready' AND ${REQUESTER_SQL} = u.id) AS songs,
-            (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.status = 'ready' AND ${REQUESTER_SQL} = u.id) AS bytes,
+            (SELECT COUNT(*) FROM songs s WHERE s.status = 'ready' AND ${REQUESTED_BY_U}) AS songs,
+            (SELECT COALESCE(SUM(s.size + s.cover_size), 0) FROM songs s WHERE s.status = 'ready' AND ${REQUESTED_BY_U}) AS bytes,
             (SELECT MAX(created_at) FROM sessions WHERE user_id = u.id) AS lastLogin
      FROM users u ORDER BY (u.status = 'pending') DESC, u.created_at DESC`,
   ).all<{
@@ -2103,9 +2112,17 @@ app.post("/spot/list/:id", async (c) => {
       .prepare("INSERT INTO import_tracks (id, request_id, pos, meta, status, song_id) VALUES (?, ?, ?, ?, ?, ?)")
       .bind(randomId(), id, pos, JSON.stringify(cleanTrack(t.meta ?? {})), songId ? "done" : "queued", songId);
   });
+  const now = Date.now();
+  const known = tracks.map((t) => t.songId).filter((s): s is string => typeof s === "string" && ID_RE.test(s));
   await db.batch([
     db.prepare("DELETE FROM import_tracks WHERE request_id = ?").bind(id),
     ...inserts,
+    // Já estavam no catálogo: contam como pedidas por quem mandou o link.
+    ...known.map((songId) =>
+      db
+        .prepare("INSERT OR IGNORE INTO song_requests (user_id, song_id, created_at) SELECT user_id, ?, ? FROM import_requests WHERE id = ?")
+        .bind(songId, now, id),
+    ),
     db
       .prepare(
         "UPDATE import_requests SET status = 'listed', provider = ?, source = ?, name = ?, truncated = ?, error = NULL, device = NULL WHERE id = ?",
@@ -2150,6 +2167,13 @@ app.post("/spot/track/:id", async (c) => {
   await db.batch([
     db.prepare("UPDATE import_tracks SET status = 'done', song_id = ?, error = NULL, device = NULL WHERE id = ?").bind(songId, id),
     db.prepare("UPDATE import_devices SET last_done_at = ? WHERE id = ?").bind(Date.now(), device),
+    // Quem pediu fica guardado de vez (o pedido sai da fila quando a pessoa o tira da lista).
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO song_requests (user_id, song_id, created_at)
+         SELECT r.user_id, ?, ? FROM import_tracks t JOIN import_requests r ON r.id = t.request_id WHERE t.id = ?`,
+      )
+      .bind(songId, Date.now(), id),
   ]);
   return c.json({ ok: true });
 });

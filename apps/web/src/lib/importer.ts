@@ -338,7 +338,7 @@ async function importFile(file: File, extras: ImportExtras, report: Report) {
   const { song, created } = await publishSong(
     audio,
     cover,
-    { ...query, duration: duration || (await probeDuration(audio, audioMime)), album: c.album || extras.album || "", mime: audioMime },
+    { ...query, duration: duration || (await probeDuration(audio, audioMime)), album: c.album || extras.album || "", mime: audioMime, own: !extras.publishOnly },
     (p) => report({ progress: p }),
   );
   // Outra pessoa enviou a mesma enquanto este aparelho convertia.
