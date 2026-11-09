@@ -125,8 +125,7 @@ export function DiscoverPage() {
         </div>
       )}
 
-      {results && <SearchResults hits={results} query={resultsFor} requested={requested} />}
-
+      {/* A pergunta do link vem antes dos resultados da busca (senão fica lá embaixo, sem ninguém ver). */}
       {pick && (
         <div className="import-result">
           <p>
@@ -172,6 +171,8 @@ export function DiscoverPage() {
           </div>
         </div>
       )}
+
+      {results && <SearchResults hits={results} query={resultsFor} requested={requested} />}
 
       {(requests.length > 0 || arrived.length > 0) && (
         <>
