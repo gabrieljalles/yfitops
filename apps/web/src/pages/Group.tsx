@@ -4,7 +4,7 @@ import { Cover } from "../components/Cover";
 import { DownloadMenu } from "../components/DownloadMenu";
 import { Icon } from "../components/Icon";
 import { TrackList } from "../components/TrackList";
-import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, saveItem } from "../lib/library";
+import { deleteItem, favoriteIds, getTrackFrom, libraryStore, removeFromPlaylist, reorderPlaylist, saveItem } from "../lib/library";
 import { confirmDialog, promptDialog } from "../lib/dialog";
 import { finished, importsStore, playlistSyncUrl, requestProgress, syncPlaylist } from "../lib/imports";
 import { useStore } from "../lib/observable";
@@ -115,6 +115,7 @@ export function GroupPage({ id }: { id: string }) {
         ids={p.trackIds}
         empty="Playlist vazia. Adicione músicas pelo menu ⋯ de cada uma."
         onRemove={editing ? (tid) => void removeFromPlaylist(id, tid) : undefined}
+        onReorder={editing ? (ids) => void attempt(() => reorderPlaylist(id, ids)) : undefined}
       />
     </div>
   );

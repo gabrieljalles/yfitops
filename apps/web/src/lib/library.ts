@@ -141,6 +141,12 @@ export async function addToPlaylist(playlistId: string, trackIds: string[]) {
   await saveItem("playlist", playlistId, { ...p, trackIds: [...p.trackIds, ...trackIds.filter((t) => !set.has(t))] });
 }
 
+/** Nova ordem das músicas da playlist (arrastando em "editar"). */
+export async function reorderPlaylist(playlistId: string, trackIds: string[]) {
+  const p = libraryStore.get().playlists[playlistId];
+  if (p) await saveItem("playlist", playlistId, { ...p, trackIds });
+}
+
 export async function removeFromPlaylist(playlistId: string, trackId: string) {
   const p = libraryStore.get().playlists[playlistId];
   if (p) await saveItem("playlist", playlistId, { ...p, trackIds: p.trackIds.filter((t) => t !== trackId) });

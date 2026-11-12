@@ -537,6 +537,22 @@ select {
 .tracks li.active .track-title {
   font-weight: 650;
 }
+/* Editando a playlist: alça para arrastar (o dedo nela não rola a página). */
+.drag-handle {
+  touch-action: none;
+  cursor: grab;
+  margin-right: -4px;
+}
+.tracks li.dragging {
+  background: var(--surface-2);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
+  position: relative;
+  z-index: 1;
+}
+.tracks li.dragging .drag-handle {
+  cursor: grabbing;
+  color: var(--text);
+}
 /* Modo de seleção (excluir em lote). */
 .tracks li.selected {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
